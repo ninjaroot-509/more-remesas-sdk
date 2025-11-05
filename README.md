@@ -6,9 +6,9 @@
 
 ---
 
-## ⚡ Overview
+## Overview
 
-This SDK provides a clean, secure, and typed interface for the **Remittance SOAP API** used by **More Payment Evolution**.
+This SDK provides a clean, secure, and typed interface for the **Remittance SOAP API** used by **More Payment Evolution**.  
 It automatically handles authentication, SOAP envelope creation, retries, and error handling and giving you JSON-like responses instantly.
 
 ---
