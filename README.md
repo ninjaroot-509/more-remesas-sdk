@@ -67,7 +67,8 @@ from moreremesas import MoreRemesas
 api = MoreRemesas(
     host="...",
     login_user="...",
-    login_pass="..."
+    login_pass="...",
+    sandbox=True, # default
 )
 
 # Get rates
