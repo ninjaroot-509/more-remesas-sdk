@@ -37,6 +37,17 @@ REQUIRED_ORDER_INFO2 = [
     "OrderDate","SourceCountry","SourceBranchID","OrderCurrency","OrderAmount","PayoutBranchID","Customer","Beneficiary"
 ]
 
+OP_MAP = {
+    "RATES":         ("AWS_API_RATES2.Execute",         "Rates2Request"),
+    "BRANCHES":      ("AWS_API_BRANCHESLIST2.Execute",  "BranchList2Request"),
+    "ORDERS_STATUS": ("AWS_API_ORDERSSTATUS2.Execute",  "OrderStatus2Request"),
+    "ORDER_IMPORT":  ("AWS_API_ORDERIMPORT2.Execute",   "OrderImport2Request"),
+    "ORDER_CALC":    ("AWS_API_ORDERCALC2.Execute",     "OrderCalc2Request"),
+    "ORDER_CANCEL":  ("AWS_API_ORDERCANCEL2.Execute",   "OrderCancel2Request"),
+    "ORDER_UPDATE":  ("AWS_API_ORDERUPDATE2.Execute",   "OrderUpdate2Request"),
+    "AUTH":          ("AWS_API_AUTH2.Execute",          "Logintype"),
+}
+
 class MoreRemesas:
     def __init__(self, host: str, login_user: str, login_pass: str, timeout: int = 30, retries: int = 3):
         self.host = host.rstrip("/")
@@ -89,39 +100,46 @@ class MoreRemesas:
     def _auth_header_xml(self) -> str:
         return f"<mmt:AuthHeader><mmt:AccessToken>{self.token}</mmt:AccessToken></mmt:AuthHeader>" if self.token else ""
 
-    def _call(self, path_key: str, operation: str, params: Dict[str, Any] | None = None) -> dict:
+    def _call(self, path_key: str, op_key: str, params: Dict[str, Any] | None = None) -> dict:
         self._ensure_token()
+        op_name, req_wrapper = OP_MAP[op_key]
+
         fields = "".join(f"<mmt:{k}>{v}</mmt:{k}>" for k, v in (params or {}).items())
-        action = ACTION_PREFIX + operation
-        body   = f"<mmt:{operation}>{fields}</mmt:{operation}>"
-        xml    = self._envelope(body, self._auth_header_xml())
-        root   = self.soap.post(PATHS[path_key], action, xml)
-        resp = root.find(".//{MMT}Response") or root.find(".//*[contains(local-name(), 'Response')]")
+        body = (
+            f"<mmt:{op_name}>"
+            f"<mmt:{req_wrapper}>{fields}</mmt:{req_wrapper}>"
+            f"</mmt:{op_name}>"
+        )
+
+        action = "MMTaction/" + op_name
+        xml = self._envelope(body, self._auth_header_xml())
+        root = self.soap.post(PATHS[path_key], action, xml)
+        resp = root.find('.//{MMT}Response') or root.find(".//*[contains(local-name(), 'Response')]")
         if resp is None:
             raise ValidationError("Response not found.")
         return self._xml2dict(resp)
 
     def rates(self, **fields) -> dict:
-        return self._call("RATES", "Rates2.Execute", fields)
+        return self._call("RATES", "RATES", fields)
 
     def branches(self, **fields) -> dict:
-        return self._call("BRANCHES", "BranchesList2.Execute", fields)
+        return self._call("BRANCHES", "BRANCHES", fields)
 
     def orders_status(self, **fields) -> dict:
-        return self._call("ORDERS_STATUS", "OrdersStatus2.Execute", fields)
+        return self._call("ORDERS_STATUS", "ORDERS_STATUS", fields)
 
     def order_import(self, **order) -> dict:
         self._validate_order_min(order)
-        return self._call("ORDER_IMPORT", "OrderImport2.Execute", order)
+        return self._call("ORDER_IMPORT", "ORDER_IMPORT", order)
 
     def order_calc(self, **fields) -> dict:
-        return self._call("ORDER_CALC", "OrderCalc2.Execute", fields)
+        return self._call("ORDER_CALC", "ORDER_CALC", fields)
 
     def order_cancel(self, **fields) -> dict:
-        return self._call("ORDER_CANCEL", "OrderCancel2.Execute", fields)
+        return self._call("ORDER_CANCEL", "ORDER_CANCEL", fields)
 
     def order_update(self, **fields) -> dict:
-        return self._call("ORDER_UPDATE", "OrderUpdate2.Execute", fields)
+        return self._call("ORDER_UPDATE", "ORDER_UPDATE", fields)
 
     def _validate_order_min(self, order: Dict[str, Any]) -> None:
         missing = [k for k in REQUIRED_ORDER_INFO2 if k not in order]
