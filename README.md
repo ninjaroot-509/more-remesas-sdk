@@ -1,7 +1,9 @@
 # More Remesas SDK (Python)
 
-> Official-style Python SDK for **More Payment Evolution — Remittance API v2.0**
+> Official-style Python SDK for **More Payment Evolution | Remittance API v2.0**
+>
 > Developed by [**Stanley Castin (n1n24)**](https://github.com/ninjaroot-509)
+>
 > Email: [stanleycastin19@gmail.com](mailto:stanleycastin19@gmail.com)
 
 ---
@@ -9,7 +11,7 @@
 ## ⚡ Overview
 
 This SDK provides a clean, secure, and typed interface for the **Remittance SOAP API** used by **More Payment Evolution**.
-It automatically handles authentication, SOAP envelope creation, retries, and error handling — giving you JSON-like responses instantly.
+It automatically handles authentication, SOAP envelope creation, retries, and error handling and giving you JSON-like responses instantly.
 
 ---
 
@@ -32,14 +34,23 @@ pip install --upgrade "git+https://github.com/ninjaroot-509/more-remesas-sdk.git
 ## Features
 
 ✅ Automatic authentication (`aWs_Api_Auth2.aspx`)
+>
 ✅ Auto token refresh before expiration
+>
 ✅ SOAP 1.1 to Python dict converter
+>
 ✅ 8 API endpoints from Remittance v2.0
+>
 ✅ Full code tables (status, purpose, relationship, etc.)
+>
 ✅ Secure logging (no credentials leaked)
+>
 ✅ Built-in retry + timeout
+>
 ✅ Custom exceptions for clarity
+>
 ✅ Light data validation
+>
 ✅ Ready for `pip install git+...` deployment
 
 ---
@@ -230,6 +241,7 @@ pip install "git+https://github.com/ninjaroot-509/more-remesas-sdk.git@v0.1.0"
 
 **Stanley Castin (n1n24)**
 📩 [stanleycastin19@gmail.com](mailto:stanleycastin19@gmail.com)
+>
 💼 [GitHub — ninjaroot-509](https://github.com/ninjaroot-509)
 
 ---
