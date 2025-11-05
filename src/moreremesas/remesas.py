@@ -18,17 +18,14 @@ OP_MAP = {
 }
 
 REQUIRED_ORDER_INFO2 = [
-    "OrderDate", "SourceCountry", "SourceBranchID",
-    "OrderCurrency", "OrderAmount", "PayoutBranchID",
-    "Customer", "Beneficiary",
+    "OrderDate","SourceCountry","SourceBranchID","OrderCurrency","OrderAmount","PayoutBranchID","Customer","Beneficiary"
 ]
-
 
 class MoreRemesas:
     """
-    sandbox=True  -> Ws_Api_* + <Request> ; PAS d'AuthHeader ; AccessKey optionnel dans <Request>
-    sandbox=False -> Ws_Api_* + <Request> ; AVEC AuthHeader (AccessToken issu de AUTH)
-    Note: AUTH = AWS_API_AUTH2.Execute (si tu veux un token côté prod)
+    sandbox=True/False: les deux font AUTH.
+    - Envoi toujours AuthHeader si token.
+    - Injecte AccessKey dans <Request> (priorité: params.AccessKey > token).
     """
     def __init__(
         self,
@@ -36,24 +33,28 @@ class MoreRemesas:
         login_user: Optional[str] = None,
         login_pass: Optional[str] = None,
         *,
-        access_key: Optional[str] = None,
         sandbox: bool = True,
+        access_key: Optional[str] = None,
         timeout: int = 30,
         retries: int = 3,
+        auto_auth: bool = True,
     ):
         self.host = host.rstrip("/")
-        self.login_user = login_user or ""
-        self.login_pass = login_pass or ""
-        self.access_key = access_key
+        self.login_user = (login_user or "").strip()
+        self.login_pass = (login_pass or "").strip()
         self.sandbox = sandbox
+        self.access_key = access_key
+        self.auto_auth = auto_auth
 
         self.soap = SoapClient(self.host, timeout=timeout, retries=retries)
-        self.token: str | None = None
-        self.token_due: dt.datetime | None = None
+        self.token: Optional[str] = None
+        self.token_due: Optional[dt.datetime] = None
+
+        if self.auto_auth and (self.login_user and self.login_pass):
+            self._authenticate()
 
     @staticmethod
     def _xml2dict(el) -> dict:
-        from xml.etree import ElementTree as ET
         out = {}
         for c in list(el):
             k = c.tag.split("}")[-1]
@@ -61,20 +62,17 @@ class MoreRemesas:
         return out
 
     def _auth_header_xml(self) -> str:
-        if self.sandbox or not self.token:
-            return ""
-        return f"<mmt:AuthHeader><mmt:AccessToken>{self.token}</mmt:AccessToken></mmt:AuthHeader>"
+        return f"<mmt:AuthHeader><mmt:AccessToken>{self.token}</mmt:AccessToken></mmt:AuthHeader>" if self.token else ""
 
     def _ensure_token(self):
-        if self.sandbox:
+        if not self.auto_auth:
             return
         if not self.token or (self.token_due and dt.datetime.utcnow() >= self.token_due):
+            if not (self.login_user and self.login_pass):
+                raise AuthError("Missing login_user/login_pass for auto_auth")
             self._authenticate()
 
     def _authenticate(self) -> None:
-        if not self.login_user or not self.login_pass:
-            raise AuthError("AUTH requires login_user/login_pass")
-
         op_name, req_wrapper = OP_MAP["AUTH"]
         body = (
             f"<mmt:{op_name}>"
@@ -84,9 +82,9 @@ class MoreRemesas:
             f"</mmt:{req_wrapper}>"
             f"</mmt:{op_name}>"
         )
-        xml = self._envelope(body, "")
+        xml    = self._envelope(body, "")
         action = "MMTaction/" + op_name
-        root = self.soap.post(PATHS["AUTH"], action, xml)
+        root   = self.soap.post(PATHS["AUTH"], action, xml)
         payload = root.find(".//{MMT}Response")
         if payload is None:
             raise AuthError("Auth: <Response> not found.")
@@ -111,20 +109,19 @@ class MoreRemesas:
             self._ensure_token()
 
         op_name, req_wrapper = OP_MAP[op_key]
+        merged = dict(params or {})
 
-        merged_params = dict(params or {})
-        if self.sandbox and self.access_key and "AccessKey" not in merged_params:
-            merged_params["AccessKey"] = self.access_key
+        if "AccessKey" not in merged:
+            if self.access_key:
+                merged["AccessKey"] = self.access_key
+            elif self.token:
+                merged["AccessKey"] = self.token
 
-        fields = "".join(f"<mmt:{k}>{v}</mmt:{k}>" for k, v in merged_params.items())
-        body = (
-            f"<mmt:{op_name}>"
-            f"<mmt:{req_wrapper}>{fields}</mmt:{req_wrapper}>"
-            f"</mmt:{op_name}>"
-        )
+        fields = "".join(f"<mmt:{k}>{v}</mmt:{k}>" for k, v in merged.items())
+        body = f"<mmt:{op_name}><mmt:{req_wrapper}>{fields}</mmt:{req_wrapper}></mmt:{op_name}>"
 
-        header = "" if (self.sandbox or op_key == "AUTH") else self._auth_header_xml()
-        xml = self._envelope(body, header)
+        header = self._auth_header_xml()
+        xml    = self._envelope(body, header)
         action = "MMTaction/" + op_name
 
         root = self.soap.post(PATHS[path_key], action, xml)
@@ -133,27 +130,15 @@ class MoreRemesas:
             raise ValidationError("Response not found.")
         return self._xml2dict(resp)
 
-    def rates(self, **fields) -> dict:
-        return self._call("RATES", "RATES", fields)
-
-    def branches(self, **fields) -> dict:
-        return self._call("BRANCHES", "BRANCHES", fields)
-
-    def orders_status(self, **fields) -> dict:
-        return self._call("ORDERS_STATUS", "ORDERS_STATUS", fields)
-
+    def rates(self, **fields) -> dict:         return self._call("RATES", "RATES", fields)
+    def branches(self, **fields) -> dict:      return self._call("BRANCHES", "BRANCHES", fields)
+    def orders_status(self, **fields) -> dict: return self._call("ORDERS_STATUS", "ORDERS_STATUS", fields)
     def order_import(self, **order) -> dict:
         self._validate_order_min(order)
         return self._call("ORDER_IMPORT", "ORDER_IMPORT", order)
-
-    def order_calc(self, **fields) -> dict:
-        return self._call("ORDER_CALC", "ORDER_CALC", fields)
-
-    def order_cancel(self, **fields) -> dict:
-        return self._call("ORDER_CANCEL", "ORDER_CANCEL", fields)
-
-    def order_update(self, **fields) -> dict:
-        return self._call("ORDER_UPDATE", "ORDER_UPDATE", fields)
+    def order_calc(self, **fields) -> dict:    return self._call("ORDER_CALC", "ORDER_CALC", fields)
+    def order_cancel(self, **fields) -> dict:  return self._call("ORDER_CANCEL", "ORDER_CANCEL", fields)
+    def order_update(self, **fields) -> dict:  return self._call("ORDER_UPDATE", "ORDER_UPDATE", fields)
 
     def _validate_order_min(self, order: Dict[str, Any]) -> None:
         missing = [k for k in REQUIRED_ORDER_INFO2 if k not in order]
@@ -167,18 +152,9 @@ class MoreRemesas:
         return d
 
     @staticmethod
-    def order_info_min(
-        *,
-        OrderDate: str,
-        SourceCountry: str,
-        SourceBranchID: str,
-        OrderCurrency: str,
-        OrderAmount: str | float,
-        PayoutBranchID: str,
-        Customer: dict,
-        Beneficiary: dict,
-        **opt
-    ) -> dict:
+    def order_info_min(*, OrderDate: str, SourceCountry: str, SourceBranchID: str,
+                       OrderCurrency: str, OrderAmount: str | float,
+                       PayoutBranchID: str, Customer: dict, Beneficiary: dict, **opt) -> dict:
         base = {
             "OrderDate": OrderDate,
             "SourceCountry": SourceCountry,
