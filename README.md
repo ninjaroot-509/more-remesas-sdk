@@ -236,7 +236,7 @@ pip install "git+https://github.com/ninjaroot-509/more-remesas-sdk.git@v0.1.0"
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE).  
 © 2025 **Stanley Castin (n1n24)** — Haiti on fire 🇭🇹🔥
 
 ---
