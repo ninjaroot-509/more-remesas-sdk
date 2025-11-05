@@ -1,7 +1,6 @@
 # More Remesas SDK (Python)
 
-> Official-style Python SDK for **More Payment Evolution | Remittance API v2.0**
->
+> Official-style Python SDK for **More Payment Evolution | Remittance API v2.0**  
 > Developed by [**Stanley Castin (n1n24)**](https://github.com/ninjaroot-509)
 >
 > Email: [stanleycastin19@gmail.com](mailto:stanleycastin19@gmail.com)
