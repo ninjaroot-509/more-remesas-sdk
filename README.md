@@ -1,5 +1,3 @@
----
-
 # More Remesas SDK (Python)
 
 > Official-style Python SDK for **More Payment Evolution — Remittance API v2.0**
