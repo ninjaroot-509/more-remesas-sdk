@@ -76,8 +76,8 @@ rates = api.rates(SourceCountry="CL", DestinationCountry="HT", Currency="USD")
 print("Rates:", rates)
 
 # Prepare sender and receiver
-sender = api.person_min(FirstName="JUAN", LastName="RODRIGUEZ", Nationality="UY", Gender="M")
-bene   = api.person_min(FirstName="ANA", LastName="PEREZ", Nationality="HT", Gender="F")
+sender = api.person_min(FirstName="JEAN RICHARD", LastName="MERCIDIEU", Nationality="CL", Gender="M")
+bene   = api.person_min(FirstName="STANLEY", LastName="CASTIN", Nationality="HT", Gender="M")
 
 # Build order
 order = api.order_info_min(
@@ -155,8 +155,8 @@ print("Status:", status)
 
 | Field       | Type | Example      |
 | ----------- | ---- | ------------ |
-| FirstName   | str  | “JUAN”       |
-| LastName    | str  | “RODRIGUEZ”  |
+| FirstName   | str  | “STANLEY”       |
+| LastName    | str  | “CASTIN”  |
 | Gender      | str  | “M”          |
 | Nationality | str  | “UY”         |
 | DateOfBirth | str  | “1979-12-01” |
