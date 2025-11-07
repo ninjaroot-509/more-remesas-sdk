@@ -11,6 +11,7 @@ PATHS = {
     "ORDER_IMPORT": "/HmgChile16/aWs_Api_OrderImport2.aspx",
     "ORDER_CALC": "/HmgChile16/aWs_Api_OrderCalc2.aspx",
     "ORDER_CALC2":"/HmgChile16/aWs_Api_OrderCalc2.aspx",
+    "RESERVE_KEY": "/HmgChile16/aWs_Api_ReserveKey2.aspx",
 
     # Other
     "ORDER_CANCEL": "/HmgChile16/aWs_Api_OrderCancel2.aspx",

@@ -33,14 +33,14 @@ pip install --upgrade "git+https://github.com/ninjaroot-509/more-remesas-sdk.git
 
 ✅ Automatic authentication (`aWs_Api_Auth2.aspx`)  
 ✅ Auto token refresh before expiration  
+✅ Reserve Key flow support (`aWs_Api_ReserveKey2.aspx`)  
 ✅ SOAP 1.1 to Python dict converter  
 ✅ 8 API endpoints from Remittance v2.0  
-✅ Full code tables (status, purpose, relationship, etc.)  
+✅ Full order lifecycle: Auth → Calc → Reserve → Import → Status  
 ✅ Secure logging (no credentials leaked)  
 ✅ Built-in retry + timeout  
 ✅ Custom exceptions for clarity  
-✅ Light data validation  
-✅ Ready for `pip install git+...` deployment
+✅ Light data validation
 
 ---
 
@@ -48,14 +48,15 @@ pip install --upgrade "git+https://github.com/ninjaroot-509/more-remesas-sdk.git
 
 | Category       | Method            |
 | -------------- | ----------------- |
-| Authentication | `auth`            |
-| Regular APIs   | `rates()`         |
+| Authentication | `auth()`          |
+| Core APIs      | `rates()`         |
 |                | `branches()`      |
 |                | `orders_status()` |
-| Send Money     | `order_import()`  |
-|                | `order_calc()`    |
-| Optional APIs  | `order_cancel()`  |
-|                | `order_update()`  |
+| Order Flow     | `order_calc2()`   |
+|                | `reserve_key()`   |
+|                | `order_import()`  |
+| Optional       | `order_update()`  |
+|                | `order_cancel()`  |
 
 ---
 
@@ -63,72 +64,102 @@ pip install --upgrade "git+https://github.com/ninjaroot-509/more-remesas-sdk.git
 
 ```python
 from moreremesas import MoreRemesas
+from moreremesas.exceptions import MoreError
+from datetime import date
 
 api = MoreRemesas(
     host="...",
     login_user="...",
     login_pass="...",
-    sandbox=True, # default
+    sandbox=True,
+    auto_auth=True,
 )
 
-# Get rates
-rates = api.rates(SourceCountry="CL", DestinationCountry="HT", Currency="USD")
-print("Rates:", rates)
+try:
+    # Authenticate
+    api._ensure_token()
 
-# Prepare sender and receiver
-sender = api.person_min(FirstName="JEAN RICHARD", LastName="MERCIDIEU", Nationality="CL", Gender="M")
-bene   = api.person_min(FirstName="STANLEY", LastName="CASTIN", Nationality="HT", Gender="M")
+    # --- Step 1: Fetch payout branches dynamically ---
+    payout_country = "HT"
+    branches = api.branches(Country=payout_country, Type="2", MaxResults="1000")
 
-# Build order
-order = api.order_info_min(
-    OrderDate="2025-11-05",
-    SourceCountry="CL",
-    SourceBranchID="123456",
-    OrderCurrency="USD",
-    OrderAmount="100.00",
-    PayoutBranchID="5091025",
-    Customer=sender,
-    Beneficiary=bene,
-    PayoutCountry="HT",
-    PayoutCurrency="USD"
-)
+    # --- Step 2: Extract dynamic currencies from API ---
+    currencies = sorted({c["Code"] for b in branches["Branches"]["Branch"] for c in b["Currencies"]["Currency"]})
+    pay_ccy = currencies[0]  # Example: "USD" or "HTG" depending on API response
 
-# Calculate fees
-calc = api.order_calc(**order)
-print("Calculation:", calc)
+    # --- Step 3: Calculate payout and fees ---
+    calc = api.order_calc2(CountryTo=payout_country, PaymentCurrency=pay_ccy, CalcType="1", Amount="500")
+    option = calc["Options"]["Option"][0]
 
-# Send money
-resp = api.order_import(**order)
-print("Order Response:", resp)
+    # --- Step 4: Prepare sender & beneficiary ---
+    sender = {
+        "FirstName": "JEAN RICHARD", "LastName": "MERCIDIEU", "Gender": "M",
+        "Nationality": "CL", "Email": "sender@example.com", "Phone": "957540283",
+        "Address": {"State": "SANTIAGO", "City": "SANTIAGO", "StreetAndNumber": "CALLE 5, 123"},
+        "Document": {"Type": "99", "Number": "X258881311", "IssueCountry": "CL"}
+    }
 
-# Check status
-status = api.orders_status(OrderPartnerID="ORD001")
-print("Status:", status)
+    beneficiary = {
+        "FirstName": "STANLEY", "LastName": "CASTIN", "Gender": "M",
+        "Nationality": "HT", "Email": "bene@example.com", "Phone": "50947929400",
+        "Address": {"State": "PORT AU PRINCE", "City": "PORT AU PRINCE", "StreetAndNumber": "RUE 1, 123"},
+        "Document": {"Type": "99", "Number": "X258881311", "IssueCountry": "HT"}
+    }
+
+    # --- Step 5: Reserve key (Haiti and similar require it) ---
+    order_info = {
+        "OrderDate": str(date.today()),
+        "SourceCountry": "CL",
+        "SourceBranchID": "1234",
+        "OrderCurrency": option["SendCurrency"],
+        "OrderAmount": option["SendAmount"],
+        "PayoutBranchID": option["BranchID"],
+        "Customer": sender,
+        "Beneficiary": beneficiary,
+        "OrderID": "TMP-DEMO-001",
+        "OrderPartnerID": "AGENT-DEMO-001",
+        "PayoutCountry": payout_country,
+        "PayoutCurrency": pay_ccy,
+        "PayoutAmount": option["PaymentAmount"],
+        "Relationship": "2",
+        "PourposeCode": "1",
+        "PayerID": option["PayerID"],
+        "PayoutMethod": "2",
+        "BeneMessage": "Gift transaction"
+    }
+
+    resv = api.reserve_key(OrderInfo=order_info)
+    reserve_key = resv.get("ReservationKey") or resv.get("ReserveKey")
+
+    # --- Step 6: Import order ---
+    imp = api.order_import(ReserveKey=reserve_key, **order_info)
+    print("Order imported:", imp)
+
+    # --- Step 7: Check order status ---
+    status = api.orders_status(OrderPartnerID=order_info["OrderPartnerID"])
+    print("Order status:", status)
+
+except MoreError as e:
+    print("SDK error:", e)
 ```
+**Everything is dynamic** — currencies, payer IDs, branches, and ReserveKey flow are handled automatically via API responses.
 
 ---
 
 ## Code Tables
 
-### OrderStatus
-
-| Code | Meaning            |
-| ---- | ------------------ |
-| P    | Pending            |
-| F    | Paid               |
-| R    | Withheld           |
-| A    | Canceled           |
-| I    | Incidence          |
-| N    | Pending Activation |
-| T    | In transit         |
-
-### Relationship
-
-`1=Spouse`, `2=Son/Daughter`, `3=Parents`, `8=Friend`, `9999=No information`, etc.
-
-### Purpose
-
-`1=Other`, `2=Family Aid`, `5=Goods purchase`, `9=Fees and services`, etc.
+| Type                   | Code | Meaning        |
+| ---------------------- | ---- | -------------- |
+| OrderStatus            | `P`  | Pending        |
+|                        | `I`  | Incidence      |
+|                        | `F`  | Paid           |
+|                        | `A`  | Canceled       |
+| Relationship           | `1`  | Spouse         |
+|                        | `2`  | Child          |
+|                        | `8`  | Friend         |
+| Purpose (PourposeCode) | `1`  | Other          |
+|                        | `2`  | Family Aid     |
+|                        | `5`  | Goods Purchase |
 
 ### BankAccType
 
@@ -196,13 +227,29 @@ Contains all remittance order data (sender, beneficiary, amounts, currencies, et
 
 ---
 
-## Testing
+## Notes
 
-To run tests locally:
+* **ReserveKey flow** is mandatory for some destinations (e.g., Haiti).
+* The SDK automatically sends orders in the **origin currency** required by API.
+* All currencies and IDs are dynamically fetched from the API.
+* The script `test_sdk.py` is a complete interactive example ready for real-world testing.
+
+---
+
+## Run the Example
 
 ```bash
-pip install -e .
-pytest -v
+python test_sdk.py
+```
+
+It will guide you through:
+
+```
+→ Country selection
+→ Branch + currency discovery
+→ Fee calculation
+→ Reserve key
+→ Final import + status check
 ```
 
 ---

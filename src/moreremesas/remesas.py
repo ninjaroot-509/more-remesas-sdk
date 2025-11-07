@@ -16,6 +16,7 @@ OP_MAP = {
     "ORDER_CALC2":   ("Ws_Api_OrderCalc2.Execute",      "Request"),
     "ORDER_CANCEL":  ("Ws_Api_OrderCancel2.Execute",    "Request"),
     "ORDER_UPDATE":  ("Ws_Api_OrderUpdate2.Execute",    "Request"),
+    "RESERVE_KEY":   ("aWS_Api_ReserveKey2.Execute",    "Request"),
 }
 
 REQUIRED_ORDER_INFO2 = [
@@ -113,7 +114,7 @@ class MoreRemesas:
             return {k: MoreRemesas._coerce_lists(v) for k, v in obj.items()}
         return obj
 
-    # récursif: dict/list -> XML <mmt:Key>...</mmt:Key>
+    # dict/list -> XML <mmt:Key>...</mmt:Key>
     @staticmethod
     def _to_xml_fields(obj: Any, key: Optional[str] = None) -> str:
         ns = "mmt"
@@ -128,10 +129,7 @@ class MoreRemesas:
                 return f"<{ns}:{key}>{inner}</{ns}:{key}>"
             return "".join(MoreRemesas._to_xml_fields(v, k) for k, v in obj.items())
         if isinstance(obj, list):
-            # liste => répéter la même clé; si pas de clé parent, on ne peut pas deviner
-            # ici on attend des listes seulement pour conteneurs connus (Rates/Options/etc.)
             return "".join(MoreRemesas._to_xml_fields(v, key) for v in obj)
-        # fallback texte
         val = _escape(str(obj))
         return f"<{ns}:{key}>{val}</{ns}:{key}>" if key else val
 
@@ -199,14 +197,12 @@ class MoreRemesas:
         if "AccessKey" not in merged:
             merged["AccessKey"] = self.access_key or self.token or ""
 
-        # sérialisation récursive
         fields_xml = self._to_xml_fields(merged)  # <mmt:Key>...</mmt:Key> récursifs
 
         body = f"<mmt:{op_name}><mmt:{req_wrapper}>{fields_xml}</mmt:{req_wrapper}></mmt:{op_name}>"
         header = self._auth_header_xml()
         xml    = self._envelope(body, header)
 
-        # print("XML Request:", xml)  # debug
         action = "MMTaction/" + op_name
 
         root = self.soap.post(PATHS[path_key], action, xml)
@@ -223,11 +219,17 @@ class MoreRemesas:
     def branches(self, **fields) -> dict:             return self._call("BRANCHES", "BRANCHES", fields)
     def orders_status(self, **fields) -> dict:        return self._call("ORDERS_STATUS", "ORDERS_STATUS", fields)
 
-    def order_import(self, **order) -> dict:
-        # Validation côté SDK sur le payload minima
+    def reserve_key(self, *, OrderInfo: dict, **extra) -> dict:
+        self._validate_order_min(OrderInfo)
+        payload = {"OrderInfo": OrderInfo}
+        payload.update(extra)
+        return self._call("RESERVE_KEY", "RESERVE_KEY", payload)
+    
+    def order_import(self, *, ReserveKey: Optional[str] = None, **order) -> dict:
         self._validate_order_min(order)
-        # La doc impose <OrderInfo>…</OrderInfo> à l’intérieur de <Request>
         wrapped = {"OrderInfo": order}
+        if ReserveKey:
+            wrapped = {"ReserveKey": ReserveKey, **wrapped}
         return self._call("ORDER_IMPORT", "ORDER_IMPORT", wrapped)
 
     def order_calc(self, **fields) -> dict:           return self._call("ORDER_CALC", "ORDER_CALC", fields)
