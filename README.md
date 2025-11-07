@@ -259,7 +259,7 @@ It will guide you through:
 Any user can install it for a specific version via:
 
 ```bash
-pip install "git+https://github.com/ninjaroot-509/more-remesas-sdk.git@v0.1.1"
+pip install "git+https://github.com/ninjaroot-509/more-remesas-sdk.git@v0.1.0"
 ```
 
 ---
