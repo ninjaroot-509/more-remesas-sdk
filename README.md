@@ -31,9 +31,9 @@ pip install --upgrade "git+https://github.com/ninjaroot-509/more-remesas-sdk.git
 
 ## Features
 
-✅ Automatic authentication (`aWs_Api_Auth2.aspx`)  
+✅ Automatic authentication  
 ✅ Auto token refresh before expiration  
-✅ Reserve Key flow support (`aWs_Api_ReserveKey2.aspx`)  
+✅ Reserve Key flow support  
 ✅ SOAP 1.1 to Python dict converter  
 ✅ 8 API endpoints from Remittance v2.0  
 ✅ Full order lifecycle: Auth → Calc → Reserve → Import → Status  
