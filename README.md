@@ -52,7 +52,7 @@ pip install --upgrade "git+https://github.com/ninjaroot-509/more-remesas-sdk.git
 | Core APIs      | `rates()`         |
 |                | `branches()`      |
 |                | `orders_status()` |
-| Order Flow     | `order_calc2()`   |
+| Order Flow     | `order_calc()`   |
 |                | `reserve_key()`   |
 |                | `order_import()`  |
 | Optional       | `order_update()`  |
@@ -88,7 +88,7 @@ try:
     pay_ccy = currencies[0]  # Example: "USD" or "HTG" depending on API response
 
     # --- Step 3: Calculate payout and fees ---
-    calc = api.order_calc2(CountryTo=payout_country, PaymentCurrency=pay_ccy, CalcType="1", Amount="500")
+    calc = api.order_calc(CountryTo=payout_country, PaymentCurrency=pay_ccy, CalcType="1", Amount="500")
     option = calc["Options"]["Option"][0]
 
     # --- Step 4: Prepare sender & beneficiary ---
