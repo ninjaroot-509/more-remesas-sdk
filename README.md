@@ -44,19 +44,149 @@ pip install --upgrade "git+https://github.com/ninjaroot-509/more-remesas-sdk.git
 
 ---
 
-## Supported func
+## Supported Methods
 
-| Category       | Method            |
-| -------------- | ----------------- |
-| Authentication | `auth()`          |
-| Core APIs      | `rates()`         |
-|                | `branches()`      |
-|                | `orders_status()` |
-| Order Flow     | `order_calc()`   |
-|                | `reserve_key()`   |
-|                | `order_import()`  |
-| Optional       | `order_update()`  |
-|                | `order_cancel()`  |
+| Category           | Method                           | Description                                                             |
+| ------------------ | -------------------------------- | ----------------------------------------------------------------------- |
+| **Authentication** | `auth()`                         | Authenticates the user and returns an access token.                     |
+| **Core APIs**      | `rates()`                        | Retrieves exchange rates between source and payout currencies.          |
+|                    | `branches()`                     | Lists all payout branches (Cash / Bank / Wallet) by country and method. |
+|                    | `orders_status()`                | Gets the current status of a transaction.                               |
+| **Order Flow**     | `order_calc()` | Calculates payout amount, fees, and rates for a given corridor.         |
+|                    | `reserve_key()`                  | Reserves an operation key before sending money.                         |
+|                    | `order_import()`                 | Confirms (imports) an order after reservation.                          |
+| **Optional**       | `order_update()`                 | Updates a previously imported order.                                    |
+|                    | `order_cancel()`                 | Cancels or refunds an order.                                            |
+
+---
+
+## Method Parameters
+
+### `auth()`
+
+Authenticate with username and password.
+
+| Parameter   | Type  | Required | Description                         |
+| ----------- | ----- | -------- | ----------------------------------- |
+| `LoginUser` | `str` | ✅        | Username provided by More Sistemas. |
+| `LoginPass` | `str` | ✅        | Password for the API account.       |
+
+**Returns:**
+`AccessToken`, `ResponseCode`, `DueDate`, `Messages`.
+
+---
+
+### `rates()`
+
+Retrieve exchange rates between two currencies.
+
+| Parameter             | Type  | Required | Description                                    |
+| --------------------- | ----- | -------- | ---------------------------------------------- |
+| `PayerId`             | `str` | ✅        | Payer or branch network ID.                    |
+| `BranchID`            | `str` | ✅        | Branch identifier.                             |
+| `Currency`            | `str` | ✅        | Destination (payout) currency code.            |
+| `BaseCurrency`        | `str` | ✅        | Source (origin) currency code.                 |
+| `IncludeDynamicRates` | `str` | Optional | Use `"1"` to include updated or special rates. |
+
+**Returns:**
+Rate list with ID, Currency, BaseCurrency, RateValue, and EffectiveDate.
+
+---
+
+### `branches()`
+
+List payout branches for a given country and method.
+
+| Parameter    | Type  | Required | Description                                         |
+| ------------ | ----- | -------- | --------------------------------------------------- |
+| `Country`    | `str` | ✅        | ISO-2 code of the payout country (e.g. `HT`, `DO`). |
+| `Type`       | `str` | ✅        | Channel type: `1=Bank`, `2=Cash`, `3=Wallet`.       |
+| `MaxResults` | `str` | Optional | Pagination size (default `1000`).                   |
+| `NextID`     | `str` | Optional | Cursor for next page.                               |
+
+**Returns:**
+Branch list with IDs, payer info, city/state, available currencies, and bank details.
+
+---
+
+### `order_calc()`
+
+Calculate a payout quote based on amount, currency, and corridor.
+
+| Parameter         | Type   | Required | Description                                                                                |
+| ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------ |
+| `CountryTo`       | `str`  | ✅        | Destination country ISO-2 code.                                                            |
+| `PaymentCurrency` | `str`  | ✅        | Destination payout currency (e.g. `HTG`, `USD`).                                           |
+| `CalcType`        | `str`  | ✅        | Calculation mode: `1=To pay at destination`, `2=Equivalent base`, `3=Commission included`. |
+| `Amount`          | `str`  | ✅        | Amount to send or pay (string with decimals).                                              |
+| `CountryFrom`     | `str`  | Optional | Origin country ISO-2 code (if required).                                                   |
+| `Attributes`      | `dict` | Optional | Additional partner-specific fields.                                                        |
+
+**Returns:**
+List of payout options with network description, payout amounts, currencies, fees, taxes, and exchange rates.
+
+---
+
+### `reserve_key()`
+
+Reserve a transfer key (pre-authorization before sending).
+
+| Parameter   | Type   | Required | Description                                                   |
+| ----------- | ------ | -------- | ------------------------------------------------------------- |
+| `OrderInfo` | `dict` | ✅        | Order structure with sender, beneficiary, and payout details. |
+
+**Returns:**
+`ReserveKey`, expiration info, and any validation messages.
+
+---
+
+### `order_import()`
+
+Confirm and import a reserved transfer order.
+
+| Parameter    | Type   | Required | Description                                                  |
+| ------------ | ------ | -------- | ------------------------------------------------------------ |
+| `ReserveKey` | `str`  | Optional | Key obtained from `reserve_key()` (if required by corridor). |
+| `OrderInfo`  | `dict` | ✅        | Full order info: source, payout, sender, and beneficiary.    |
+
+**Returns:**
+Confirmation of successful import with system reference and status codes.
+
+---
+
+### `orders_status()`
+
+Get status for a specific transaction or partner order.
+
+| Parameter        | Type  | Required | Description                        |
+| ---------------- | ----- | -------- | ---------------------------------- |
+| `OrderPartnerID` | `str` | Optional | Internal partner order ID.         |
+| `OrderId`        | `str` | Optional | Provider-generated transaction ID. |
+
+**Returns:**
+Order status, timestamps, and transaction details.
+
+---
+
+### `order_update()`
+
+Update a previously imported order (rarely used).
+
+| Parameter    | Type   | Required | Description                   |
+| ------------ | ------ | -------- | ----------------------------- |
+| `OrderId`    | `str`  | ✅        | Target order ID.              |
+| `Attributes` | `dict` | Optional | New values or status updates. |
+
+---
+
+### `order_cancel()`
+
+Cancel or refund an existing order.
+
+| Parameter | Type  | Required | Description                                            |
+| --------- | ----- | -------- | ------------------------------------------------------ |
+| `OrderId` | `str` | ✅        | Target order ID.                                       |
+| `Reason`  | `str` | Optional | Cancel or refund reason (e.g. `"CANCELLED_BY_AGENT"`). |
 
 ---
 

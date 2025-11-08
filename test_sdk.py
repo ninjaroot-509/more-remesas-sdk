@@ -295,10 +295,10 @@ def _filter_calc_by_method(options: List[Dict], method_label: str, allowed_branc
 
 def select_calc_option(api: MoreRemesas, payout_country: str, pay_ccy: str, calc_type_value: str,
                        user_amt: str, method_label: str, allowed_branch_ids: Optional[set[str]]) -> Dict:
-    calc = api.order_calc2(CountryTo=payout_country, PaymentCurrency=pay_ccy, CalcType=calc_type_value, Amount=user_amt)
+    calc = api.order_calc(CountryTo=payout_country, PaymentCurrency=pay_ccy, CalcType=calc_type_value, Amount=user_amt)
     options = _as_list((calc.get("Options") or {}).get("Option"))
     if not options and calc_type_value != CALC_TYPES["To pay at destination"]:
-        calc = api.order_calc2(CountryTo=payout_country, PaymentCurrency=pay_ccy,
+        calc = api.order_calc(CountryTo=payout_country, PaymentCurrency=pay_ccy,
                                CalcType=CALC_TYPES["To pay at destination"], Amount=user_amt)
         options = _as_list((calc.get("Options") or {}).get("Option"))
     if not options:
