@@ -31,6 +31,11 @@ BANK_ACCOUNT_TYPES = [
     ("IBAN","IBAN / Other"),
 ]
 
+BASE_ORDER_CCY = "CLP"
+
+# -------------------- LIMITS TOGGLE --------------------
+APPLY_LIMITS: bool = False
+
 # -------------------- HELPERS --------------------
 def ask(prompt: str, default: str | None = None) -> str:
     sfx = f" [{default}]" if default not in (None, "") else ""
@@ -64,17 +69,41 @@ def ask_required(prompt: str) -> str:
             return v
         print("  Required value.")
 
+def _to_float(x: Any) -> float:
+    if x is None: return 0.0
+    if isinstance(x, (int, float)): return float(x)
+    s = str(x)
+    if "," in s and "." in s and s.find(",") > s.find("."):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", ".")
+    return float(s)
+
 def ask_money(prompt: str) -> str:
     while True:
         v = input(f"{prompt}: ").strip()
-        vv = v.replace(",", ".")
         try:
-            float(vv)
-            log.info("INPUT | %s => %s", prompt, vv)
-            print(f"Amount confirmed: {vv}")
-            return vv
-        except ValueError:
+            _ = _to_float(v)
+            log.info("INPUT | %s => %s", prompt, v)
+            return v
+        except Exception:
             print("  Invalid amount. Example: 1, 5, 300.50")
+
+def ask_money_limited(prompt: str, ccy: str, *, min_amt: Optional[float], max_amt: Optional[float]) -> str:
+    tips = []
+    if min_amt is not None: tips.append(f"min {min_amt:,.2f} {ccy}")
+    if max_amt is not None: tips.append(f"max {max_amt:,.2f} {ccy}")
+    hint = f" ({', '.join(tips)})" if tips else ""
+    while True:
+        raw = ask_money(prompt + hint)
+        val = _to_float(raw)
+        if min_amt is not None and val < float(min_amt):
+            print(f"  Must be ≥ {min_amt:,.2f} {ccy}")
+            continue
+        if max_amt is not None and val > float(max_amt):
+            print(f"  Must be ≤ {max_amt:,.2f} {ccy}")
+            continue
+        return raw
 
 def confirm(prompt: str) -> bool:
     v = input(f"{prompt} [y/N]: ").strip().lower()
@@ -84,12 +113,9 @@ def confirm(prompt: str) -> bool:
 
 # -------------------- UTIL --------------------
 def _as_list(node: Any) -> List[Dict]:
-    if not node or node == "":
-        return []
-    if isinstance(node, list):
-        return node
-    if isinstance(node, dict):
-        return [node]
+    if not node or node == "": return []
+    if isinstance(node, list): return node
+    if isinstance(node, dict): return [node]
     return []
 
 def gen_partner_id(prefix="AGENT"):
@@ -120,17 +146,6 @@ def city_score(cand_city: str, cand_state: str, want_city: str, want_state: str)
     elif norm(want_city) and norm(want_city) in norm(cand_city): score += 1
     if cand_state and want_state and norm(cand_state) == norm(want_state): score += 1
     return score
-
-def _to_float(x: Any) -> float:
-    if x is None: return 0.0
-    if isinstance(x, (int, float)): return float(x)
-    s = str(x)
-    if "," in s and "." in s:
-        if s.find(",") > s.find("."):
-            s = s.replace(".", "").replace(",", ".")
-    else:
-        s = s.replace(",", ".")
-    return float(s)
 
 def _fmt_money_en(val: float) -> str:
     return f"{val:,.2f}"
@@ -184,13 +199,14 @@ def fetch_branches_all(api: MoreRemesas, payout_country: str, method_label: str,
         items = _as_list(resp.get("Branches", {}).get("Branch") or resp.get("Branches", {}).get("BranchItem"))
         for it in items:
             all_items.append({
-                "BranchId": str(it.get("BranchId") or it.get("ID") or it.get("Id") or it.get("BranchID") or ""),
-                "PayerId": str(it.get("PayerId") or it.get("PayerID") or "0"),
-                "Name": it.get("Name") or it.get("BranchName") or "",
+                "BranchId":  str(it.get("BranchId") or it.get("ID") or it.get("Id") or it.get("BranchID") or ""),
+                "PayerId":   str(it.get("PayerId") or it.get("PayerID") or "0"),
+                "Name":      it.get("Name") or it.get("BranchName") or "",
                 "CityState": it.get("CityState") or it.get("City") or it.get("CityName") or "",
                 "Currencies": _as_list((it.get("Currencies") or {}).get("Currency")),
-                "BankID": str(it.get("BankID") or "").strip(),
-                "BankName": (it.get("BankName") or "").strip(),
+                "BankID":    str(it.get("BankID") or "").strip(),
+                "BankName":  (it.get("BankName") or "").strip(),
+                "Type":      str(it.get("Type") or ""),  # 1 bank, 2 cash, 3 wallet
             })
         next_id = str(resp.get("NextID") or "0")
         if next_id in ("0", "", None): break
@@ -201,7 +217,8 @@ def currencies_from_branches(branches: List[Dict]) -> List[str]:
     for it in branches:
         for c in it.get("Currencies", []):
             code = c if isinstance(c, str) else (c.get("Currency") or c.get("Code") or "")
-            if code: codes.add(code.strip().upper())
+            code = (str(code) or "").strip().upper()
+            if code: codes.add(code)
     return sorted(codes)
 
 def filter_branches_by_ccy(branches: List[Dict], ccy: str) -> List[Dict]:
@@ -210,8 +227,9 @@ def filter_branches_by_ccy(branches: List[Dict], ccy: str) -> List[Dict]:
         codes = set()
         for c in it["Currencies"]:
             code = c if isinstance(c, str) else (c.get("Currency") or c.get("Code") or "")
-            if code: codes.add(code.strip().upper())
-        if ccy.upper() in codes or len(codes) == 0: out.append(it)
+            if code: codes.add(str(code).strip().upper())
+        if ccy.upper() in codes or len(codes) == 0:
+            out.append(it)
     return out or branches
 
 def best_one_per_payer(branches: List[Dict], want_city: str, want_state: str) -> List[Dict]:
@@ -226,21 +244,52 @@ def best_one_per_payer(branches: List[Dict], want_city: str, want_state: str) ->
     res.sort(key=lambda x: (-x["_score"], x["Name"]))
     return res
 
-def build_bank_catalog(branches: List[Dict]) -> List[Dict]:
-    catalog: Dict[Tuple[str, str], Dict] = {}
-    for it in branches:
-        bank_id = it["BankID"]; bank_name = (it["BankName"] or "").strip()
-        if not bank_id or bank_id in {"0","00","000","0000"}: continue
-        key = (bank_id, bank_name)
-        if key not in catalog: catalog[key] = {"BankID": bank_id, "BankName": bank_name, "branches": []}
-        catalog[key]["branches"].append(it)
-    banks = list(catalog.values())
-    banks.sort(key=lambda b: (b["BankName"] or "").upper())
-    return banks
+def branches_for_method(
+    branches: List[Dict],
+    method_label: str,
+    *,
+    pay_ccy: Optional[str] = None,
+    want_city: str = "",
+    want_state: str = "",
+    best_per_payer: bool = True,
+) -> List[Dict]:
+    want_type = BRANCH_TYPES[method_label]
+    pool = [b for b in branches if str(b.get("Type") or "") == want_type]
+    if pay_ccy:
+        pool = filter_branches_by_ccy(pool, pay_ccy)
+    if best_per_payer:
+        ranked = best_one_per_payer(pool, want_city, want_state)
+        return ranked or pool
+    return pool
 
-def bank_display_name(b: Dict) -> str:
-    nm = (b.get("BankName") or "").strip()
-    return nm or f"Bank {b.get('BankID','')}"
+# -------- Currency limits ----------
+def _extract_currency_limits_from_entry(cur: Dict) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    def _clean(v):
+        if v in (None, "", {}):
+            return None
+        try:
+            f = _to_float(v)
+            return None if abs(f) < 1e-12 else f
+        except Exception:
+            return None
+    min_raw = cur.get("AmmountOrderMin") or cur.get("AmountOrderMin")
+    max_raw = cur.get("AmmountOrderMax") or cur.get("AmountOrderMax")
+    day_raw = cur.get("CurrencyAmmountDayLimit") or cur.get("CurrencyAmountDayLimit")
+    return _clean(min_raw), _clean(max_raw), _clean(day_raw)
+
+def consolidate_limits(branches: List[Dict], pay_ccy: str) -> Dict[str, Optional[float]]:
+    mins, maxs, days = [], [], []
+    for b in branches:
+        for cur in b.get("Currencies", []):
+            if not isinstance(cur, dict): continue
+            if str(cur.get("Currency") or "").upper() != pay_ccy.upper(): continue
+            mn, mx, dy = _extract_currency_limits_from_entry(cur)
+            if mn is not None: mins.append(mn)
+            if mx is not None: maxs.append(mx)
+            if dy is not None: days.append(dy)
+    return {"min": max(mins) if mins else 0,
+            "max": min(maxs) if maxs else 0,
+            "day": min(days) if days else 0}
 
 # -------------------- CALC TABLE --------------------
 def print_calc_table_portal(options: List[Dict]) -> None:
@@ -257,7 +306,6 @@ def print_calc_table_portal(options: List[Dict]) -> None:
     print("\n" + bar)
     print(" ".join(f"{title:<{w}}" for title, w in cols))
     print(" ".join(("-" * w) for _, w in cols))
-
     for op in options:
         desc = str(op.get("Description") or op.get("Network") or op.get("PayerName") or "").upper().strip()
         send_amt = _to_float(op.get("SendAmount") or 0.0)
@@ -265,67 +313,101 @@ def print_calc_table_portal(options: List[Dict]) -> None:
         fees     = _sum_taxes_for_send_ccy(op)
         total    = send_amt + fees
         rate_s   = _guess_rate(op)
-
-        row = [
-            desc,
-            rate_s,
-            _fmt_money_en(send_amt),
-            _fmt_money_en(fees),
-            _fmt_money_en(total),
-            _fmt_money_en(pay_amt),
-        ]
+        row = [desc, rate_s, _fmt_money_en(send_amt), _fmt_money_en(fees), _fmt_money_en(total), _fmt_money_en(pay_amt)]
         print(" ".join(f"{cell:<{w}}" for cell, (_, w) in zip(row, cols)))
     print(bar + "\n")
 
 # -------------------- CORE CALC SELECTION --------------------
-def _filter_calc_by_method(options: List[Dict], method_label: str, allowed_branch_ids: Optional[set[str]] = None) -> List[Dict]:
+def _filter_calc_by_method(
+    options: List[Dict],
+    method_label: str,
+    allowed_branch_ids: Optional[set[str]] = None,
+    allowed_payer_ids: Optional[set[str]] = None,
+    allowed_bank_ids: Optional[set[str]] = None,
+) -> List[Dict]:
+    if not options:
+        return []
+
+    if method_label == "Bank":
+        any_bank_in_options = any(str(op.get("BankID") or "").strip() for op in options)
+        if not any_bank_in_options:
+            return options
+
     out = []
     for op in options:
-        desc = (op.get("Description") or "").upper()
-        bid = str(op.get("BranchID") or "")
-        if allowed_branch_ids and bid and bid not in allowed_branch_ids: continue
-        if method_label == "Wallet":
-            if any(k in desc for k in ("DIGICEL", "NATCOM", "WALLET", "MOBILE")): out.append(op)
-        elif method_label == "Bank":
-            if "DIGICEL" in desc: continue
+        bid = str(op.get("BranchID") or "").strip()
+        pid = str(op.get("PayerID") or op.get("PayerId") or "").strip()
+        bankid = str(op.get("BankID") or "").strip()
+        ok = True
+        if method_label in ("Bank", "Wallet"):
+            ok = False
+            if allowed_branch_ids and bid and bid in allowed_branch_ids: ok = True
+            if not ok and allowed_payer_ids and pid and pid in allowed_payer_ids: ok = True
+            if not ok and allowed_bank_ids and bankid and bankid in allowed_bank_ids: ok = True
+        if ok:
             out.append(op)
-        else:
-            out.append(op)
+
+    if method_label in ("Bank", "Wallet") and not out:
+        raise MoreError("No CALC options match the selected payout method for this currency.")
     return out
 
-def select_calc_option(api: MoreRemesas, payout_country: str, pay_ccy: str, calc_type_value: str,
-                       user_amt: str, method_label: str, allowed_branch_ids: Optional[set[str]]) -> Dict:
-    calc = api.order_calc(CountryTo=payout_country, PaymentCurrency=pay_ccy, CalcType=calc_type_value, Amount=user_amt)
+def select_calc_option(
+    api: MoreRemesas,
+    payout_country: str,
+    pay_ccy: str,
+    calc_type_value: str,
+    user_amt: str,
+    method_label: str,
+    allowed_branch_ids: Optional[set[str]],
+    allowed_payer_ids: Optional[set[str]],
+    bank_id: Optional[str] = None,
+) -> Dict:
+    params = dict(CountryTo=payout_country, PaymentCurrency=pay_ccy,
+                  CalcType=calc_type_value, Amount=user_amt)
+    if method_label == "Bank" and bank_id:
+        params["BankID"] = bank_id
+
+    calc = api.order_calc(**params)
     options = _as_list((calc.get("Options") or {}).get("Option"))
-    if not options and calc_type_value != CALC_TYPES["To pay at destination"]:
-        calc = api.order_calc(CountryTo=payout_country, PaymentCurrency=pay_ccy,
-                               CalcType=CALC_TYPES["To pay at destination"], Amount=user_amt)
-        options = _as_list((calc.get("Options") or {}).get("Option"))
+
     if not options:
         raise MoreError(f"CALC failed: {calc}")
 
-    options = _filter_calc_by_method(options, method_label, allowed_branch_ids)
-    if not options:
-        raise MoreError("No valid CALC option for this method/bank.")
+    allowed_bank_ids = {bank_id} if bank_id else None
+    options = _filter_calc_by_method(
+        options, method_label, allowed_branch_ids, allowed_payer_ids, allowed_bank_ids
+    )
 
     print_calc_table_portal(options)
     labels = [f"{op.get('Description','')} | receive {op.get('PaymentAmount','')} {op.get('PaymentCurrency','')}" for op in options]
     iop = choose("Pick a network/payer option", labels, 0)
     return options[iop]
 
-def fetch_rate_id(api: MoreRemesas, payer_id: str, branch_id: str, pay_ccy: str, order_ccy: str) -> str:
+# ---- RATES ----
+def fetch_rate_id_and_value(api: MoreRemesas, payer_id: str, branch_id: str, pay_ccy: str, order_ccy: str) -> Tuple[str, float]:
     try:
         log.info("RATES2 | Request: PayerId=%s BranchID=%s Currency=%s BaseCurrency=%s IncludeDynamicRates=1",
                  payer_id, branch_id, pay_ccy, order_ccy)
         resp = api.rates(PayerId=payer_id, BranchID=branch_id, Currency=pay_ccy,
                          BaseCurrency=order_ccy, IncludeDynamicRates="1")
     except Exception:
-        return ""
+        return "", 0.0
     rates = _as_list(resp.get("Rates", {}).get("Rate") or resp.get("Rates"))
     for r in rates:
         rid = str(r.get("ID") or r.get("RateID") or "0")
-        if rid and rid != "0": return rid
-    return ""
+        val = 0.0
+        for k in ("ExchangeRate","Rate","RateValue","FX","FxRate"):
+            try:
+                if r.get(k) is not None:
+                    val = _to_float(r.get(k))
+                    break
+            except Exception:
+                pass
+        if rid and rid != "0":
+            return rid, val
+        if val:
+            return "", val
+    return "", 0.0
 
 def extract_reserve_key(resv: dict) -> str:
     attrs = resv.get("Attributes"); attr_key = ""
@@ -339,7 +421,92 @@ def message_codes(payload: dict) -> set[str]:
     if isinstance(msgs, dict): msgs = [msgs]
     return {str(m.get("MessageCode")) for m in msgs if isinstance(m, dict)}
 
+# ---- Reserve + retry if bad rate ----
+def try_reserve_and_import(
+    api: MoreRemesas,
+    order_info: Dict[str, Any],
+    *,
+    payout_country: str,
+    pay_ccy: str,
+    calc_type_value: str,
+    method_label: str,
+    allowed_branch_ids: Optional[set[str]],
+    allowed_payer_ids: Optional[set[str]],
+) -> None:
+    resv = api.reserve_key(OrderInfo=order_info)
+    log.info("RESERVE | %s", resv)
+    rk = extract_reserve_key(resv)
+    codes = message_codes(resv)
+    if rk:
+        preview = {**{k: v for k, v in order_info.items() if k not in ("Customer","Beneficiary")},
+                   "Customer": order_info["Customer"], "Beneficiary": order_info["Beneficiary"]}
+        print("\nORDER IMPORT | Payload:", preview)
+        imp = api.order_import(ReserveKey=rk, **order_info)
+        print("\nImport result:", imp)
+        codes_imp = message_codes(imp)
+        if "22" in codes_imp:
+            raise MoreError("Agent credit limit exceeded (code 22). Reduce amount or increase ceiling.")
+        return
+
+    if "103" in codes:
+        log.warning("Reserve failed with 103: refreshing CALC and retrying with latest rate/amounts.")
+        calc = api.order_calc(CountryTo=payout_country, PaymentCurrency=pay_ccy, CalcType=calc_type_value, Amount=order_info["PayoutAmount"])
+        options = _as_list((calc.get("Options") or {}).get("Option"))
+        options = _filter_calc_by_method(options, method_label, allowed_branch_ids, allowed_payer_ids)
+        if not options:
+            raise MoreError("No CALC options after refresh.")
+        same_bid = str(order_info.get("PayoutBranchID") or "")
+        opt = next((o for o in options if str(o.get("BranchID") or "") == same_bid), options[0])
+        send_ccy = str(opt.get("SendCurrency") or order_info["OrderCurrency"])
+        send_amt = f"{_to_float(opt.get('SendAmount') or 0):.2f}"
+        pay_amt  = f"{_to_float(opt.get('PaymentAmount') or order_info['PayoutAmount']):.2f}"
+        order_info["OrderCurrency"] = send_ccy
+        order_info["OrderAmount"]   = send_amt
+        order_info["PayoutAmount"]  = pay_amt
+        rid, rval = fetch_rate_id_and_value(
+            api,
+            str(order_info.get("PayerID") or ""),
+            str(order_info.get("PayoutBranchID") or ""),
+            pay_ccy,
+            order_info["OrderCurrency"],
+        )
+        if rid:
+            order_info["OrderRateID"] = rid
+        if rval:
+            order_info["ExchangeRate"] = f"{float(rval):.6f}"
+        resv2 = api.reserve_key(OrderInfo=order_info)
+        log.info("RESERVE-RETRY | %s", resv2)
+        rk2 = extract_reserve_key(resv2)
+        if not rk2:
+            raise MoreError("Reserve retry failed.")
+        preview = {**{k: v for k, v in order_info.items() if k not in ("Customer","Beneficiary")},
+                   "Customer": order_info["Customer"], "Beneficiary": order_info["Beneficiary"]}
+        print("\nORDER IMPORT | Payload:", preview)
+        imp2 = api.order_import(ReserveKey=rk2, **order_info)
+        print("\nImport result:", imp2)
+        codes_imp2 = message_codes(imp2)
+        if "22" in codes_imp2:
+            raise MoreError("Agent credit limit exceeded (code 22). Reduce amount or increase ceiling.")
+        return
+
+    raise MoreError("Empty ReserveKey: destination requires prior reservation.")
+
 # -------------------- FLOWS --------------------
+def _choose_bank_from_branches(branches: List[Dict]) -> Optional[str]:
+    uniq: Dict[str, str] = {}
+    for b in branches:
+        bid = str(b.get("BankID") or "").strip()
+        bname = (b.get("BankName") or "").strip()
+        if not bid or bid == "0":
+            continue
+        uniq[bid] = bname or f"Bank {bid}"
+    if not uniq:
+        return None
+    ordered = sorted(uniq.items(), key=lambda x: x[1].lower())
+    labels = [f"{name} (BankID={bid})" for bid, name in ordered]
+    idx = choose("Bank (destination)", labels, 0)
+    return ordered[idx][0]
+
 def flow_calculate(api: MoreRemesas):
     payout_country = ask("Payout Country (ISO-2)", "HT")
     method_ui = ["Cash window", "Bank", "Wallet"]
@@ -347,32 +514,38 @@ def flow_calculate(api: MoreRemesas):
     method_label = ["Cash", "Bank", "Wallet"][mi]
 
     branches_raw = fetch_branches_all(api, payout_country, method_label, "1000")
-    all_ccys = currencies_from_branches(branches_raw)
-    if not all_ccys: raise MoreError("No payout currencies returned by API for these branches/methods.")
-    idx_ccy = choose("Payout Currency (from API)", all_ccys, 0)
-    pay_ccy = all_ccys[idx_ccy]
-    branches_ccy = filter_branches_by_ccy(branches_raw, pay_ccy)
 
-    allowed_branch_ids: Optional[set[str]] = None
+    all_ccys = currencies_from_branches(branches_raw)
+    if not all_ccys: raise MoreError("No payout currencies returned by API.")
+    idx_ccy = choose("Payout Currency", all_ccys, 0)
+    pay_ccy = all_ccys[idx_ccy]
+
+    branches_all_for_filter = branches_for_method(branches_raw, method_label, pay_ccy=pay_ccy, best_per_payer=True)
+    allowed_branch_ids = {b["BranchId"] for b in branches_all_for_filter if b.get("BranchId")}
+    allowed_payer_ids  = {b["PayerId"] for b in branches_all_for_filter if b.get("PayerId")}
+
+    bank_id = None
     if method_label == "Bank":
-        bank_catalog = build_bank_catalog(branches_ccy)
-        names = [bank_display_name(b) for b in bank_catalog] or ["-- NO BANKS --"]
-        _ = choose("Bank (from API)", names, 0)
-        bank_id = bank_catalog[_]["BankID"] if bank_catalog else None
-        if bank_id:
-            allowed_branch_ids = {it["BranchId"] for it in branches_ccy if it["BankID"] == bank_id and it["BranchId"]}
-    elif method_label == "Wallet":
-        like = [it for it in branches_ccy if any(k in (it.get("Name") or "").upper() for k in ("DIGICEL","WALLET","MOBILE"))]
-        if like: allowed_branch_ids = {like[0]["BranchId"]}
+        bank_id = _choose_bank_from_branches(branches_all_for_filter)
 
     calc_ui = ["To pay at destination", "Equivalent base", "Commission included"]
-    ci = choose("Operation Type", calc_ui, 0)
+    ci = choose("Calculation Type", calc_ui, 0)
     calc_type_value = CALC_TYPES[calc_ui[ci]]
 
-    amt = ask_money("Amount (exact string for API)")
-    print(f"\nEntered amount: {amt} {pay_ccy} (CalcType={calc_type_value})")
+    limits = consolidate_limits(branches_all_for_filter, pay_ccy)
+    print(f"Daily payout limit for {pay_ccy}: {limits['day']:,.2f}")
 
-    op = select_calc_option(api, payout_country, pay_ccy, calc_type_value, amt, method_label, allowed_branch_ids)
+    if calc_type_value == CALC_TYPES["To pay at destination"]:
+        amt = ask_money(f"Amount API in {pay_ccy}")
+        print(f"\nEntered amount: {amt} {pay_ccy} (CalcType={calc_type_value})")
+    else:
+        amt = ask_money(f"Amount API in {BASE_ORDER_CCY}")
+        print(f"\nEntered amount: {amt} {BASE_ORDER_CCY} (CalcType={calc_type_value})")
+
+    op = select_calc_option(
+        api, payout_country, pay_ccy, calc_type_value,
+        amt, method_label, allowed_branch_ids, allowed_payer_ids, bank_id,
+    )
     print("\nChosen option:")
     print_calc_table_portal([op])
 
@@ -407,7 +580,6 @@ def _collect_sender_bene(source_country_default="CL") -> tuple[dict, dict]:
         "Address": {"State": s_state, "City": s_city, "StreetAndNumber": s_addr},
         "Document": {"Type": "99" if dt_idx == 0 else "561", "Number": s_doc_num, "IssueCountry": s_national},
     }
-
     b_first = ask("Beneficiary First Name", "STANLEY")
     b_last  = ask("Beneficiary Last Name", "CASTIN")
     b_gender= ["M","F"][choose("Beneficiary Gender", ["Male(M)", "Female(F)"], 0)]
@@ -446,95 +618,72 @@ def flow_send(api: MoreRemesas):
     branches_raw = fetch_branches_all(api, payout_country, method_label, page_size="1000")
 
     all_ccys = currencies_from_branches(branches_raw)
-    if not all_ccys: raise MoreError("No payout currencies returned by API for these branches/methods.")
-    idx_ccy = choose("Payout Currency (from API)", all_ccys, 0)
+    if not all_ccys: raise MoreError("No payout currencies returned by API.")
+    idx_ccy = choose("Payout Currency", all_ccys, 0)
     pay_ccy = all_ccys[idx_ccy]
-    branches_ccy = filter_branches_by_ccy(branches_raw, pay_ccy)
 
-    bank_choice_id = None
-    bank_account_type_code = None
-    bank_account_type_label = None
-    bank_account = None
-    bank_agency = None
-    wallet_phone = None
-    wallet_provider_branch: Optional[Dict] = None
+    branches_all_for_filter = branches_for_method(
+        branches_raw, method_label, pay_ccy=pay_ccy, best_per_payer=True
+    )
+    allowed_branch_ids = {b["BranchId"] for b in branches_all_for_filter if b.get("BranchId")}
+    allowed_payer_ids  = {b["PayerId"] for b in branches_all_for_filter if b.get("PayerId")}
 
+    bank_id = None
     if method_label == "Bank":
-        bank_catalog = build_bank_catalog(branches_ccy)
-        if not bank_catalog: raise MoreError("No bank available from API for this corridor/currency.")
-        names = [bank_display_name(b) for b in bank_catalog]
-        default_idx = next((i for i, b in enumerate(bank_catalog) if b["BankID"] == "1150"), 0)
-        bi = choose("Bank (from API)", names, default_idx)
-        picked_bank = bank_catalog[bi]
-        bank_choice_id = picked_bank["BankID"]
+        bank_id = _choose_bank_from_branches(branches_all_for_filter)
 
-        acct_labels = [lbl for _, lbl in BANK_ACCOUNT_TYPES]
-        ai = choose("Account Type", acct_labels, 0)
-        bank_account_type_code, bank_account_type_label = BANK_ACCOUNT_TYPES[ai]
-        bank_account = ask_required("Account (IBAN/CBU/Account number)")
-        bank_agency  = ask("Agency/Branch (if required)", "1234")
+    limits = consolidate_limits(branches_all_for_filter, pay_ccy)
+    print(f"Daily payout limit for {pay_ccy}: {limits['day']:,.2f}")
 
-    elif method_label == "Wallet":
-        wallet_phone = ask_required("Wallet phone (full MSISDN)")
-        wallet_like = []
-        for it in branches_ccy:
-            n = (it.get("Name") or "").upper()
-            if any(k in n for k in ("DIGICEL", "WALLET", "MOBILE")): wallet_like.append(it)
-        if wallet_like:
-            b_city = beneficiary["Address"]["City"]; b_state = beneficiary["Address"]["State"]
-            wallet_like.sort(key=lambda it: -city_score(split_city_state(it["CityState"])[0],
-                                                        split_city_state(it["CityState"])[1], b_city, b_state))
-            wallet_provider_branch = wallet_like[0]
-        else:
-            ranked = best_one_per_payer(branches_ccy, beneficiary["Address"]["City"], beneficiary["Address"]["State"])
-            wallet_provider_branch = ranked[0] if ranked else branches_ccy[0]
+    if calc_type_value == CALC_TYPES["To pay at destination"]:
+        user_amt = ask_money(f"Amount API in {pay_ccy}")
+        print(f"\nEntered amount: {user_amt} {pay_ccy} (CalcType={calc_type_value})")
+    else:
+        user_amt = ask_money(f"Amount API in {BASE_ORDER_CCY}")
+        print(f"\nEntered amount: {user_amt} {BASE_ORDER_CCY} (CalcType={calc_type_value})")
 
-    allowed_branch_ids: Optional[set[str]] = None
-    if method_label == "Bank":
-        allowed_branch_ids = {it["BranchId"] for it in branches_ccy if it["BankID"] == bank_choice_id and it["BranchId"]}
-    elif method_label == "Wallet" and wallet_provider_branch:
-        allowed_branch_ids = {wallet_provider_branch["BranchId"]}
-
-    user_amt = ask_money("Amount (exact string for API)")
-    print(f"\nEntered amount: {user_amt} {pay_ccy} (CalcType={calc_type_value})")
     bene_msg = ask("BeneMessage (payment note for beneficiary)", "Gift transaction")
     print(f"  BeneMessage               : {bene_msg}")
 
-    op = select_calc_option(api, payout_country, pay_ccy, calc_type_value, user_amt, method_label, allowed_branch_ids)
+    op = select_calc_option(
+        api, payout_country, pay_ccy, calc_type_value, user_amt,
+        method_label, allowed_branch_ids, allowed_payer_ids, bank_id
+    )
 
     payer_choice_branch = str(op.get("BranchID") or "")
-    final_branch: Optional[Dict] = next((it for it in branches_ccy if it["BranchId"] == payer_choice_branch), None)
+    final_branch: Optional[Dict] = next((it for it in branches_all_for_filter if it["BranchId"] == payer_choice_branch), None)
     if not final_branch:
-        payer_id = None; desc = (op.get("Description") or "").lower()
-        for it in branches_ccy:
-            if (it["Name"] or "").lower().split("/")[0] in desc: payer_id = it["PayerId"]; break
-        ranked = [it for it in branches_ccy if (not payer_id or it["PayerId"] == payer_id)]
-        if allowed_branch_ids: ranked = [it for it in ranked if it["BranchId"] in allowed_branch_ids]
-        final_branch = ranked[0] if ranked else branches_ccy[0]
+        ranked = branches_for_method(
+            branches_raw, method_label, pay_ccy=pay_ccy,
+            want_city=beneficiary["Address"]["City"], want_state=beneficiary["Address"]["State"],
+            best_per_payer=True,
+        )
+        final_branch = ranked[0] if ranked else (branches_all_for_filter[0] if branches_all_for_filter else None)
+    if not final_branch:
+        raise MoreError("No compatible branch found for the selected CALC option.")
 
     payout_branch_id = final_branch["BranchId"]
     payer_id_final   = final_branch["PayerId"]
     name_final       = final_branch["Name"]
 
+    order_ccy  = str(op.get("SendCurrency") or origin_ccy)
+    order_amt  = f"{_to_float(op.get('SendAmount') or 0):.2f}"
+
+    rate_id, rate_val = fetch_rate_id_and_value(api, payer_id_final, payout_branch_id, pay_ccy, order_ccy)
+
     print("\nSUMMARY")
-    print(f"  Source Country / Currency : {source_country} / {origin_ccy}")
+    print(f"  Source Country / Currency : {source_country} / {order_ccy}")
     print(f"  Payout Country            : {payout_country} (from beneficiary)")
     print(f"  Network (API CALC)        : {op.get('Description','')}")
     print(f"  BranchID                  : {payout_branch_id}  ({name_final})")
     print(f"  PayerID                   : {payer_id_final}")
-    print(f"  Entered (API)             : {user_amt} {pay_ccy}")
+    print(f"  Entered (API)             : {user_amt} {pay_ccy if calc_type_value == CALC_TYPES['To pay at destination'] else BASE_ORDER_CCY}")
     print(f"  Payout (calc)             : {op.get('PaymentAmount','')} {op.get('PaymentCurrency','')}")
-    print(f"  Send (calc)               : {op.get('SendAmount','')} {op.get('SendCurrency','')}")
+    print(f"  Send (calc)               : {order_amt} {order_ccy}")
     print(f"  Note                      : {bene_msg}")
 
     if not confirm("Proceed to send the money now?"):
         print("Cancelled by user."); return
-
-    order_ccy  = str(op.get("SendCurrency") or origin_ccy)
-    order_amt  = f"{float(op.get('SendAmount') or 0):.2f}"
-    rate_id_calc  = str(op.get("RateID") or op.get("OptionID") or "")
-    rate_id_rates = fetch_rate_id(api, payer_id_final, payout_branch_id, pay_ccy, order_ccy)
-    order_rate_id = rate_id_rates or (rate_id_calc if rate_id_calc and rate_id_calc != "0" else "")
 
     source_branch_id = ask("SourceBranchID (your agent code)", "1234") or "1234"
 
@@ -551,18 +700,26 @@ def flow_send(api: MoreRemesas):
         "OrderPartnerID": gen_partner_id("AGENT"),
         "PayoutCountry": payout_country,
         "PayoutCurrency": pay_ccy,
-        "PayoutAmount": f"{float(op.get('PaymentAmount') or user_amt):.2f}",
+        "PayoutAmount": f"{_to_float(op.get('PaymentAmount') or user_amt):.2f}",
         "Relationship": "2",
         "PourposeCode": "1",
         "PayerID": payer_id_final,
-        "PayoutMethod": BRANCH_TYPES["Cash" if method_label not in BRANCH_TYPES else method_label],
+        "PayoutMethod": BRANCH_TYPES[method_label],
         "BeneMessage": bene_msg
     }
-    if order_rate_id: order_info["OrderRateID"] = order_rate_id
+    if rate_id:
+        order_info["OrderRateID"] = rate_id
+    if rate_val:
+        order_info["ExchangeRate"] = f"{float(rate_val):.6f}"
 
     if method_label == "Bank":
+        acct_labels = [lbl for _, lbl in BANK_ACCOUNT_TYPES]
+        ai = choose("Account Type", acct_labels, 0)
+        bank_account_type_code, bank_account_type_label = BANK_ACCOUNT_TYPES[ai]
+        bank_account = ask_required("Account (IBAN/CBU/Account number)")
+        bank_agency  = ask("Agency/Branch (if required)", "1234")
         order_info["Bank"] = {
-            "BankID": bank_choice_id or "",
+            "BankID": bank_id or "",
             "Agency": bank_agency or "",
             "BankAccount": bank_account or "",
             "AccountType": bank_account_type_code or "",
@@ -570,22 +727,14 @@ def flow_send(api: MoreRemesas):
             "AccountTypeLabel": bank_account_type_label or "",
         }
     if method_label == "Wallet":
-        order_info["Wallet"] = { "Phone": wallet_phone or "" }
+        wallet_phone = ask_required("Wallet phone")
+        order_info["Wallet"] = {"Phone": wallet_phone}
 
-    resv = api.reserve_key(OrderInfo=order_info)
-    print("\nReserveKey result:", resv)
-    rk = extract_reserve_key(resv)
-    if not rk: raise MoreError("Empty ReserveKey: destination requires prior reservation.")
-
-    preview = { **{k: v for k, v in order_info.items() if k not in ("Customer","Beneficiary")},
-                "Customer": order_info["Customer"], "Beneficiary": order_info["Beneficiary"] }
-    print("\nORDER IMPORT | Payload:", preview)
-
-    imp = api.order_import(ReserveKey=rk, **order_info)
-    print("\nImport result:", imp)
-
-    codes = message_codes(imp)
-    if "22" in codes: raise MoreError("Agent credit limit exceeded (code 22). Reduce amount or increase ceiling.")
+    try_reserve_and_import(
+        api, order_info,
+        payout_country=payout_country, pay_ccy=pay_ccy, calc_type_value=calc_type_value,
+        method_label=method_label, allowed_branch_ids=allowed_branch_ids, allowed_payer_ids=allowed_payer_ids,
+    )
 
     status = api.orders_status(OrderPartnerID=order_info["OrderPartnerID"])
     print("\nStatus:", status)
