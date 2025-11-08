@@ -6,22 +6,27 @@ from .endpoints import PATHS, SOAP11, MMT_NS
 from .soap import SoapClient
 from .exceptions import AuthError, ValidationError
 
+# ------------------------------ Operation map ------------------------------
 OP_MAP = {
-    "AUTH":          ("AWS_API_AUTH2.Execute",          "Logintype"),
-    "RATES":         ("Ws_Api_Rates2.Execute",          "Request"),
-    "BRANCHES":      ("Ws_Api_BranchesList2.Execute",   "Request"),
-    "ORDERS_STATUS": ("Ws_Api_OrdersStatus2.Execute",   "Request"),
-    "ORDER_IMPORT":  ("Ws_Api_OrderImport2.Execute",    "Request"),
-    "ORDER_CALC":    ("Ws_Api_OrderCalc2.Execute",      "Request"),
-    "ORDER_CALC2":   ("Ws_Api_OrderCalc2.Execute",      "Request"),
-    "ORDER_CANCEL":  ("Ws_Api_OrderCancel2.Execute",    "Request"),
-    "ORDER_UPDATE":  ("Ws_Api_OrderUpdate2.Execute",    "Request"),
-    "RESERVE_KEY":   ("aWS_Api_ReserveKey2.Execute",    "Request"),
+    "AUTH":           ("AWS_API_AUTH2.Execute",           "Logintype"),
+    "BRANCHES":       ("Ws_Api_BranchesList2.Execute",    "Request"),
+    "RATES":          ("Ws_Api_Rates2.Execute",            "Request"),
+    "RESERVE_KEY":    ("aWS_Api_ReserveKey2.Execute",      "Request"),
+    "ORDER_IMPORT":   ("Ws_Api_OrderImport2.Execute",      "Request"),
+    "ORDERS_STATUS":  ("Ws_Api_OrdersStatus2.Execute",     "Request"),
+    "ORDER_ACTIVATE": ("Ws_Api_OrderActivate2.Execute",    "Request"),
+    "ORDER_CANCEL":   ("Ws_Api_OrderCancel2.Execute",      "Request"),
+    "ORDER_UPDATE":   ("Ws_Api_OrderUpdate2.Execute",      "Request"),
+    "ORDER_REFUND":   ("Ws_Api_OrderRefund2.Execute",      "Request"),
+    "ORDER_VOUCHER":  ("Ws_Api_OrderVoucher2.Execute",     "Request"),
+    "ORDER_CALC":     ("Ws_Api_OrderCalc2.Execute",        "Request"),
+    "ORDER_VALIDATE": ("Ws_Api_OrderValidate2.Execute",    "Request"),
 }
 
 REQUIRED_ORDER_INFO2 = [
-    "OrderDate","SourceCountry","SourceBranchID","OrderCurrency","OrderAmount",
-    "PayoutBranchID","Customer","Beneficiary"
+    "OrderDate", "SourceCountry", "SourceBranchID",
+    "OrderCurrency", "OrderAmount",
+    "PayoutBranchID", "Customer", "Beneficiary",
 ]
 
 _FORCE_LIST_BY_PARENT = {
@@ -31,9 +36,10 @@ _FORCE_LIST_BY_PARENT = {
     "Currencies": {"Currency"},
     "Taxes":      {"Tax"},
     "Messages":   {"Message"},
+    "Orders":     {"Order"},
 }
 
-def _escape(val: str) -> str:
+def _esc(val: str) -> str:
     return (
         str(val)
         .replace("&", "&amp;")
@@ -45,11 +51,15 @@ def _escape(val: str) -> str:
 
 class MoreRemesas:
     """
-    - Auth token envoyé dans AuthHeader.
-    - AccessKey injecté dans <Request>.
-    - Parser parent-aware pour listes.
-    - order_import: wrappe l’ordre sous <OrderInfo> et sérialise récursivement.
+    SOAP client for More Money Transfers V2 services.
+
+    Features:
+    - Auto-auth with token caching (sent in AuthHeader + AccessKey in body).
+    - Resilient XML→dict parser with parent-aware list coercion.
+    - OrderImport wraps order body inside <OrderInfo> and supports ReserveKey.
+    - All public endpoints in the V2 spec are exposed.
     """
+
     def __init__(
         self,
         host: str,
@@ -73,10 +83,10 @@ class MoreRemesas:
         self.token: Optional[str] = None
         self.token_due: Optional[dt.datetime] = None
 
-        if self.auto_auth and (self.login_user and self.login_pass):
+        if self.auto_auth and self.login_user and self.login_pass:
             self._authenticate()
 
-    # ---------------- XML helpers ----------------
+    # ------------------------------- XML helpers -------------------------------
     @staticmethod
     def _xml2dict_el(el, parent_key: str | None = None):
         children = list(el)
@@ -97,12 +107,11 @@ class MoreRemesas:
             else:
                 bucket[k] = v
 
-        force_children = _FORCE_LIST_BY_PARENT.get(this_key, set())
-        if force_children:
-            for child_name in force_children:
-                if child_name in bucket and not isinstance(bucket[child_name], list):
-                    val = bucket[child_name]
-                    bucket[child_name] = [] if val in (None, "", {}) else [val]
+        force = _FORCE_LIST_BY_PARENT.get(this_key, set())
+        for child_name in force:
+            if child_name in bucket and not isinstance(bucket[child_name], list):
+                val = bucket[child_name]
+                bucket[child_name] = [] if val in (None, "", {}) else [val]
 
         return bucket
 
@@ -114,26 +123,23 @@ class MoreRemesas:
             return {k: MoreRemesas._coerce_lists(v) for k, v in obj.items()}
         return obj
 
-    # dict/list -> XML <mmt:Key>...</mmt:Key>
     @staticmethod
     def _to_xml_fields(obj: Any, key: Optional[str] = None) -> str:
         ns = "mmt"
         if obj is None:
             return f"<{ns}:{key}></{ns}:{key}>" if key else ""
         if isinstance(obj, (str, int, float)):
-            val = _escape(f"{obj}")
+            val = _esc(f"{obj}")
             return f"<{ns}:{key}>{val}</{ns}:{key}>" if key else val
         if isinstance(obj, dict):
-            if key:
-                inner = "".join(MoreRemesas._to_xml_fields(v, k) for k, v in obj.items())
-                return f"<{ns}:{key}>{inner}</{ns}:{key}>"
-            return "".join(MoreRemesas._to_xml_fields(v, k) for k, v in obj.items())
+            inner = "".join(MoreRemesas._to_xml_fields(v, k) for k, v in obj.items())
+            return f"<{ns}:{key}>{inner}</{ns}:{key}>" if key else inner
         if isinstance(obj, list):
             return "".join(MoreRemesas._to_xml_fields(v, key) for v in obj)
-        val = _escape(str(obj))
+        val = _esc(str(obj))
         return f"<{ns}:{key}>{val}</{ns}:{key}>" if key else val
 
-    # ---------------- Auth ----------------
+    # ------------------------------- Auth helpers -------------------------------
     def _auth_header_xml(self) -> str:
         return (
             f"<mmt:AuthHeader><mmt:AccessToken>{self.token}</mmt:AccessToken></mmt:AuthHeader>"
@@ -143,7 +149,8 @@ class MoreRemesas:
     def _ensure_token(self):
         if not self.auto_auth:
             return
-        if not self.token or (self.token_due and dt.datetime.utcnow() >= self.token_due):
+        refresh = not self.token or (self.token_due and dt.datetime.utcnow() >= self.token_due)
+        if refresh:
             if not (self.login_user and self.login_pass):
                 raise AuthError("Missing login_user/login_pass for auto_auth")
             self._authenticate()
@@ -153,20 +160,23 @@ class MoreRemesas:
         body = (
             f"<mmt:{op_name}>"
             f"<mmt:{req_wrapper}>"
-            f"<mmt:LoginUser>{_escape(self.login_user)}</mmt:LoginUser>"
-            f"<mmt:LoginPass>{_escape(self.login_pass)}</mmt:LoginPass>"
+            f"<mmt:LoginUser>{_esc(self.login_user)}</mmt:LoginUser>"
+            f"<mmt:LoginPass>{_esc(self.login_pass)}</mmt:LoginPass>"
             f"</mmt:{req_wrapper}>"
             f"</mmt:{op_name}>"
         )
         xml    = self._envelope(body, "")
         action = "MMTaction/" + op_name
         root   = self.soap.post(PATHS["AUTH"], action, xml)
-        payload = root.find(".//{MMT}Response")
-        if payload is None:
-            raise AuthError("Auth: <Response> not found.")
-        data_raw = MoreRemesas._xml2dict_el(payload, parent_key=None)
-        data = data_raw if isinstance(data_raw, dict) else {"_text": data_raw}
-        data = MoreRemesas._coerce_lists(data)
+
+        resp = root.find(".//{MMT}Response") or root.find(".//*[contains(local-name(), 'Response')]")
+        if resp is None:
+            raise AuthError("Auth: <Response> not found")
+
+        data_raw = MoreRemesas._xml2dict_el(resp)
+        data     = data_raw if isinstance(data_raw, dict) else {"_text": data_raw}
+        data     = MoreRemesas._coerce_lists(data)
+
         if data.get("ResponseCode") != "1000":
             raise AuthError(f"Auth failed: {data}")
         self.token = data.get("AccessToken") or ""
@@ -175,17 +185,18 @@ class MoreRemesas:
         except Exception:
             self.token_due = None
 
-    # ---------------- SOAP envelope ----------------
+    # ------------------------------ SOAP envelope ------------------------------
     @staticmethod
     def _envelope(body_xml: str, header_xml: str = "") -> str:
         return (
             f'<?xml version="1.0" encoding="utf-8"?>'
             f'<soap:Envelope xmlns:soap="{SOAP11}" xmlns:mmt="{MMT_NS}">'
             f"<soap:Header>{header_xml}</soap:Header>"
-            f"<soap:Body>{body_xml}</soap:Body></soap:Envelope>"
+            f"<soap:Body>{body_xml}</soap:Body>"
+            f"</soap:Envelope>"
         )
 
-    # ---------------- Core caller ----------------
+    # -------------------------------- Core caller --------------------------------
     def _call(self, path_key: str, op_key: str, params: Dict[str, Any] | None = None) -> dict:
         if op_key != "AUTH":
             self._ensure_token()
@@ -193,51 +204,84 @@ class MoreRemesas:
         op_name, req_wrapper = OP_MAP[op_key]
         merged = dict(params or {})
 
-        # AccessKey prioritaire: param > self.access_key > token
         if "AccessKey" not in merged:
             merged["AccessKey"] = self.access_key or self.token or ""
 
-        fields_xml = self._to_xml_fields(merged)  # <mmt:Key>...</mmt:Key> récursifs
-
+        fields_xml = self._to_xml_fields(merged)
         body = f"<mmt:{op_name}><mmt:{req_wrapper}>{fields_xml}</mmt:{req_wrapper}></mmt:{op_name}>"
         header = self._auth_header_xml()
         xml    = self._envelope(body, header)
-
         action = "MMTaction/" + op_name
 
         root = self.soap.post(PATHS[path_key], action, xml)
         resp = root.find(".//{MMT}Response") or root.find(".//*[contains(local-name(), 'Response')]")
         if resp is None:
-            raise ValidationError("Response not found.")
+            raise ValidationError("Response not found")
 
-        raw = MoreRemesas._xml2dict_el(resp, parent_key=None)
+        raw  = MoreRemesas._xml2dict_el(resp)
         data = raw if isinstance(raw, dict) else {"_text": raw}
         return MoreRemesas._coerce_lists(data)
 
-    # ---------------- Public endpoints ----------------
-    def rates(self, **fields) -> dict:                return self._call("RATES", "RATES", fields)
-    def branches(self, **fields) -> dict:             return self._call("BRANCHES", "BRANCHES", fields)
-    def orders_status(self, **fields) -> dict:        return self._call("ORDERS_STATUS", "ORDERS_STATUS", fields)
+    # ------------------------------- Public APIs -------------------------------
+    def branches(self, **fields) -> dict:
+        """aWs_Api_BranchesList2.aspx"""
+        return self._call("BRANCHES", "BRANCHES", fields)
+
+    def rates(self, **fields) -> dict:
+        """aWs_Api_Rates2.aspx"""
+        return self._call("RATES", "RATES", fields)
+
+    def order_calc(self, **fields) -> dict:
+        """aWs_Api_OrderCalc2.aspx"""
+        return self._call("ORDER_CALC", "ORDER_CALC", fields)
 
     def reserve_key(self, *, OrderInfo: dict, **extra) -> dict:
+        """aWS_Api_ReserveKey2.aspx"""
         self._validate_order_min(OrderInfo)
         payload = {"OrderInfo": OrderInfo}
         payload.update(extra)
         return self._call("RESERVE_KEY", "RESERVE_KEY", payload)
-    
+
     def order_import(self, *, ReserveKey: Optional[str] = None, **order) -> dict:
+        """aWs_Api_OrderImport2.aspx"""
         self._validate_order_min(order)
         wrapped = {"OrderInfo": order}
         if ReserveKey:
             wrapped = {"ReserveKey": ReserveKey, **wrapped}
         return self._call("ORDER_IMPORT", "ORDER_IMPORT", wrapped)
 
-    def order_calc(self, **fields) -> dict:           return self._call("ORDER_CALC", "ORDER_CALC", fields)
-    def order_calc2(self, **fields) -> dict:          return self._call("ORDER_CALC2", "ORDER_CALC2", fields)
-    def order_cancel(self, **fields) -> dict:         return self._call("ORDER_CANCEL", "ORDER_CANCEL", fields)
-    def order_update(self, **fields) -> dict:         return self._call("ORDER_UPDATE", "ORDER_UPDATE", fields)
+    def orders_status(self, **fields) -> dict:
+        """aWs_Api_OrdersStatus2.aspx"""
+        return self._call("ORDERS_STATUS", "ORDERS_STATUS", fields)
 
-    # ---------------- Helpers ----------------
+    def order_activate(self, **fields) -> dict:
+        """aWs_Api_OrderActivate2.aspx"""
+        return self._call("ORDER_ACTIVATE", "ORDER_ACTIVATE", fields)
+
+    def order_cancel(self, **fields) -> dict:
+        """aWs_Api_OrderCancel2.aspx"""
+        return self._call("ORDER_CANCEL", "ORDER_CANCEL", fields)
+
+    def order_update(self, **fields) -> dict:
+        """aWs_Api_OrderUpdate2.aspx"""
+        return self._call("ORDER_UPDATE", "ORDER_UPDATE", fields)
+
+    def order_refund(self, **fields) -> dict:
+        """aWs_Api_OrderRefund2.aspx"""
+        return self._call("ORDER_REFUND", "ORDER_REFUND", fields)
+
+    def order_voucher(self, **fields) -> dict:
+        """aWs_Api_OrderVoucher2.aspx"""
+        return self._call("ORDER_VOUCHER", "ORDER_VOUCHER", fields)
+
+    def order_validate(self, *, OrderInfo: dict, **extra) -> dict:
+        """aWs_Api_OrderValidate2.aspx"""
+        self._validate_order_min(OrderInfo)
+        payload = {"OrderInfo": OrderInfo}
+        payload.update(extra)
+        return self._call("ORDER_VALIDATE", "ORDER_VALIDATE", payload)
+
+    # ------------------------------- Helpers -------------------------------
     def _validate_order_min(self, order: Dict[str, Any]) -> None:
         missing = [k for k in REQUIRED_ORDER_INFO2 if k not in order]
         if missing:
@@ -262,6 +306,14 @@ class MoreRemesas:
         Beneficiary: dict,
         **opt
     ) -> dict:
+        """
+        Build a minimal OrderInfoType2 structure.
+        BankInfo can be attached by caller as:
+          BankInfo={
+            "BankName": "...", "BankBranch": "...", "BankAccType": "AHO|CTE",
+            "BankAccount": "...", "BankDocument": "...", "BankCity": "..."
+          }
+        """
         base = {
             "OrderDate": OrderDate,
             "SourceCountry": SourceCountry,
