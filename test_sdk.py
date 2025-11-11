@@ -118,15 +118,9 @@ def _as_list(node: Any) -> List[Dict]:
     if isinstance(node, dict): return [node]
     return []
 
-def gen_partner_id(prefix="AGENT"):
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    tail = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"{prefix}-{ts}-{tail}"
 
-def gen_tmp_order_id(prefix="TMP"):
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    tail = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"{prefix}-{ts}-{tail}"
+def gen_partner_ref_numeric():
+    return datetime.now(timezone.utc).strftime("%H%M%S")
 
 def norm(s: str) -> str:
     import unicodedata
@@ -696,8 +690,7 @@ def flow_send(api: MoreRemesas):
         "PayoutBranchID": payout_branch_id,
         "Customer": sender,
         "Beneficiary": beneficiary,
-        "OrderID": gen_tmp_order_id("TMP"),
-        "OrderPartnerID": gen_partner_id("AGENT"),
+        "OrderPartnerID": gen_partner_ref_numeric(),
         "PayoutCountry": payout_country,
         "PayoutCurrency": pay_ccy,
         "PayoutAmount": f"{_to_float(op.get('PaymentAmount') or user_amt):.2f}",
