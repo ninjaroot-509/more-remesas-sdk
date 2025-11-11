@@ -39,6 +39,103 @@ _FORCE_LIST_BY_PARENT = {
     "Orders":     {"Order"},
 }
 
+RESPONSE_CODES: dict[str, str] = {
+    "1000": "The transaction was successfully completed.",
+    "2": "Authorization to not control exchange rate",
+    "3": "Order with incidence",
+    "4": "Cancellation of Orders",
+    "5": "Cancellation Request",
+    "6": "Modification Request",
+    "9": "Freed by Legal Compliance",
+    "13": "With Incidence, contact Finances",
+    "18": "In revision by Legal Compliance",
+    "19": "Comment from Requests Panel",
+    "20": "Order Activated",
+    "21": "Order registered in the system",
+    "22": "With Incidence, contact Finances",
+    "30": "Payment rejected for incorrect data",
+    "31": "Documentation required by Compliance",
+    "33": "Recommend Payment",
+    "34": "Claim",
+    "102": "Origin Agent Inactive",
+    "103": "Invalid Exchange Rate",
+    "126": "Validation - Duplication Suspect",
+    "129": "Source Country error",
+    "131": "Payment branch is inactive",
+    "133": "Payment branch non-existent",
+    "134": "Sender’s name isn’t specified",
+    "135": "Sender’s last name isn’t specified",
+    "136": "Receiver’s name isn’t specified",
+    "137": "Receiver’s last name isn’t specified",
+    "138": "Invalid amount of origin/destination",
+    "139": "Incoherence in origin/destination currencies and amount",
+    "142": "Payer Agent is inactive",
+    "144": "Branch City Null",
+    "148": "Sender's telephone isn’t specified",
+    "149": "Beneficiary’s telephone or address isn’t specified",
+    "150": "Sender’s ID isn’t specified",
+    "151": "Receiver's ID isn't specified or the beneficiary's name doesn’t match with the registered document",
+    "152": "Sender's address isn’t specified",
+    "153": "Beneficiary's address isn’t specified",
+    "154": "Sender's City isn’t specified",
+    "155": "Beneficiary's City isn’t specified",
+    "156": "Bank account isn’t specified",
+    "157": "Payout branch doesn’t pay the amount sent",
+    "158": "The currency is not enabled in the payment branch",
+    "160": "Provider’s ID isn't specified or it is repeated",
+    "161": "Invalid CPF",
+    "162": "Null Bank Agency",
+    "165": "Order without reference validation",
+    "166": "There is no bank associated with the account",
+    "167": "Incorrect IBAN code",
+    "172": "Incorrect CBU",
+    "173": "Sender’s birth date isn't specified",
+    "174": "Beneficiary’s birth date isn't specified",
+    "176": "A valid purpose must be specified",
+    "177": "A valid relationship must be specified",
+    "178": "Invalid payment method",
+    "1261": "Do not control order maybe duplicated",
+    "8050": "Order sent to the Payer",
+    "9000": "Generic Webservice Error",
+    "9001": "Authentication Error",
+    "9002": "The order already exists",
+    "9003": "The specified order wasn’t found",
+    "9004": "The user does not have permission to execute the program or it is not enabled",
+    "9005": "Time expired for activating the order",
+    "9006": "AccessToken invalid",
+    "9007": "The reserve data doesn't match",
+    "9008": "Invalid Reserve",
+    "9009": "Destination requires key reserve",
+    "9010": "Request Canceled",
+    "9011": "Manual Request - Waiting confirmation",
+    "9014": "Requests - There are pending requests for the order",
+    "9016": "Request - Order Status doesn't match",
+    "9017": "Request - You are not authorized to perform the required action",
+    "9019": "Invalid agent for the specified order",
+    "9020": "Date range is above 30 days",
+    "9039": "Order status doesn’t allow to cancel",
+    "9046": "Invalid branch contract",
+    "9047": "The selected branch doesn’t belong to the payout agent",
+    "9048": "Agent doesn't reserve key",
+    "9049": "No images of the document loaded",
+    "9050": "The image sent is invalid",
+    "9051": "Agent didn’t return reserve key",
+    "9102": "The required order is PAYED",
+    "9105": "Order Payment",
+    "9106": "Reverse order payment",
+    "9107": "Reverse cancellation",
+    "9108": "Inconsistent reversion",
+    "9111": "The order has no pending activation (OrderActivate)",
+    "9112": "Order out of time of activation (OrderActivate)",
+    "9113": "The agent is not set to activate orders (OrderActivate)",
+    "9115": "Generic Error in order payment",
+    "9118": "Incorrect Method (P/A)",
+    "9119": "The method (P/A) does not correspond with the order status",
+    "9120": "The method (P/A) does not correspond with agent",
+    "9121": "Incorrect status of the order to make the request",
+    "9999": "Non-controlled exception",
+}
+
 def _esc(val: str) -> str:
     return (
         str(val)
@@ -326,3 +423,30 @@ class MoreRemesas:
         }
         base.update(opt)
         return base
+    
+    # ------------------------------ Error helpers ------------------------------
+    @staticmethod
+    def code_message(code: Optional[str | int]) -> str:
+        """Return a human-readable message for a ResponseCode."""
+        if code is None:
+            return "Unknown error"
+        key = str(code).strip()
+        return RESPONSE_CODES.get(key, f"Unknown error code {key}")
+
+    @staticmethod
+    def error_from_response(resp: dict) -> dict:
+        """
+        Normalize an API response into {code, message, details}.
+        Pulls first message from Messages.Message if present.
+        """
+        code = str(resp.get("ResponseCode") or "").strip() or None
+        msg = resp.get("ResponseMessage") or ""
+        messages = ((resp.get("Messages") or {}).get("Message")) or []
+        if isinstance(messages, dict):
+            messages = [messages]
+        detail = ""
+        if messages and isinstance(messages[0], dict):
+            detail = str(messages[0].get("MessageText") or "").strip()
+        base = MoreRemesas.code_message(code)
+        human = detail or msg or base
+        return {"code": code or "?", "message": human, "details": {"mapped": base, "raw": msg, "first_message": detail}}
