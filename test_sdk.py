@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 from datetime import date, datetime, timezone
-import logging, random, re, string
+import logging, re
 from typing import Any, Dict, List, Tuple, Optional
 
 from moreremesas import MoreRemesas
@@ -26,17 +26,18 @@ BRANCH_TYPES = {"Cash": "2", "Bank": "1", "Wallet": "3"}
 CALC_TYPES = {"To pay at destination": "1", "Equivalent base": "2", "Commission included": "3"}
 
 BANK_ACCOUNT_TYPES = [
-    ("CC",  "Checking account"),
-    ("CA",  "Savings account"),
+    ("CC",  "Checking account"),  # CTE
+    ("CA",  "Savings account"),   # AHO
     ("IBAN","IBAN / Other"),
 ]
+ACC_TYPE_LABEL = {"CC": "CTE", "CA": "AHO", "IBAN": "IBAN"}
 
 BASE_ORDER_CCY = "CLP"
 
 # -------------------- LIMITS TOGGLE --------------------
 APPLY_LIMITS: bool = False
 
-# -------------------- HELPERS --------------------
+# -------------------- INPUT HELPERS --------------------
 def ask(prompt: str, default: str | None = None) -> str:
     sfx = f" [{default}]" if default not in (None, "") else ""
     v = input(f"{prompt}{sfx}: ").strip()
@@ -118,8 +119,7 @@ def _as_list(node: Any) -> List[Dict]:
     if isinstance(node, dict): return [node]
     return []
 
-
-def gen_partner_ref_numeric():
+def gen_partner_ref_numeric() -> str:
     return datetime.now(timezone.utc).strftime("%H%M%S")
 
 def norm(s: str) -> str:
@@ -181,6 +181,29 @@ def _pick_ccys_from_options(options: List[Dict]) -> Tuple[str, str]:
             break
     return send_ccy or "XXX", pay_ccy or "XXX"
 
+# -------------------- ERROR NORMALIZATION --------------------
+def _error_from_response(resp: dict) -> Dict[str, Any]:
+    mapper = getattr(MoreRemesas, "error_from_response", None)
+    if callable(mapper):
+        return mapper(resp)
+    code = str(resp.get("ResponseCode") or "").strip() or "?"
+    msg = resp.get("ResponseMessage") or ""
+    messages = ((resp.get("Messages") or {}).get("Message")) or []
+    if isinstance(messages, dict):
+        messages = [messages]
+    detail = ""
+    if messages and isinstance(messages[0], dict):
+        detail = str(messages[0].get("MessageText") or "").strip()
+    if detail:
+        msg = f"{msg} | {detail}" if msg else detail
+    return {"code": code, "message": msg or "Unknown error", "details": {}}
+
+def _ensure_ok(resp: dict, ctx: str = "API") -> None:
+    code = str(resp.get("ResponseCode") or "")
+    if code and code != "1000":
+        err = _error_from_response(resp)
+        raise MoreError(f"{ctx}: [{err['code']}] {err['message']}")
+
 # -------------------- API HELPERS --------------------
 def fetch_branches_all(api: MoreRemesas, payout_country: str, method_label: str, page_size="1000") -> List[Dict]:
     t = BRANCH_TYPES[method_label]
@@ -190,6 +213,7 @@ def fetch_branches_all(api: MoreRemesas, payout_country: str, method_label: str,
         log.info("BRANCHES | Request: Country=%s Type=%s MaxResults=%s NextID=%s",
                  payout_country, t, page_size, next_id)
         resp = api.branches(Country=payout_country, Type=t, MaxResults=page_size, NextID=next_id)
+        _ensure_ok(resp, "Branches")
         items = _as_list(resp.get("Branches", {}).get("Branch") or resp.get("Branches", {}).get("BranchItem"))
         for it in items:
             all_items.append({
@@ -362,10 +386,12 @@ def select_calc_option(
         params["BankID"] = bank_id
 
     calc = api.order_calc(**params)
+    _ensure_ok(calc, "OrderCalc")
     options = _as_list((calc.get("Options") or {}).get("Option"))
 
     if not options:
-        raise MoreError(f"CALC failed: {calc}")
+        err = _error_from_response(calc)
+        raise MoreError(f"CALC failed: [{err['code']}] {err['message']}")
 
     allowed_bank_ids = {bank_id} if bank_id else None
     options = _filter_calc_by_method(
@@ -384,6 +410,7 @@ def fetch_rate_id_and_value(api: MoreRemesas, payer_id: str, branch_id: str, pay
                  payer_id, branch_id, pay_ccy, order_ccy)
         resp = api.rates(PayerId=payer_id, BranchID=branch_id, Currency=pay_ccy,
                          BaseCurrency=order_ccy, IncludeDynamicRates="1")
+        _ensure_ok(resp, "Rates")
     except Exception:
         return "", 0.0
     rates = _as_list(resp.get("Rates", {}).get("Rate") or resp.get("Rates"))
@@ -415,6 +442,92 @@ def message_codes(payload: dict) -> set[str]:
     if isinstance(msgs, dict): msgs = [msgs]
     return {str(m.get("MessageCode")) for m in msgs if isinstance(m, dict)}
 
+# ---- BankInfo validation ----
+def validate_bankinfo_fields(bankinfo: Dict[str, Any]) -> None:
+    req = ["BankName", "BankAccType", "BankAccount", "BankBranch", "BankCity"]
+    for k in req:
+        v = str(bankinfo.get(k) or "").strip()
+        if not v:
+            raise MoreError(f"{k} is required for Bank payouts.")
+    if bankinfo["BankAccType"].upper() not in {"CC", "CA", "IBAN"}:
+        raise MoreError("BankAccType must be one of: CC, CA, IBAN.")
+
+# ---- Country quick validation rules & prompts ----
+def _re_digits(n: int) -> re.Pattern:
+    return re.compile(rf"^\d{{{n}}}$")
+
+RE_CBU_22    = _re_digits(22)                              # Argentina
+RE_CPF_11    = _re_digits(11)                              # Brasil
+RE_ROUTING9  = _re_digits(9)                               # USA
+RE_IFSC_11   = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$", re.I) # India
+RE_RUT       = re.compile(r"^\d{7,8}-[\dkK]$")             # Chile
+
+def collect_country_bank_extras(payout_country: str, bank_name_default: str) -> Dict[str, Any]:
+    """
+    Ask only once after Bank selection. Return a dict for BankInfo.
+      - AR: BankName, CBU(22), AccountType (AHO|CTE|IBAN), CUIT/CUIL, BankAccount
+      - BR: BankName, Agency->BankBranch, AccountNumber->BankAccount, AccountType, CPF(11)
+      - CL: BankName, BankAccount, AccountType, RUT
+      - US: BankName, BankAccount, AccountType, RoutingNumber(9)
+      - IN: BankName, BankAccount, AccountType, IFSC(11)
+    BankBranch/BankCity are auto-filled later from the chosen Branch.
+    """
+    c = payout_country.upper().strip()
+    extras: Dict[str, Any] = {}
+
+    extras["BankName"] = bank_name_default or ask_required("Bank name")
+
+    acct_labels = [lbl for _, lbl in BANK_ACCOUNT_TYPES]
+    ai = choose("Account Type", acct_labels, 0)
+    acct_code, _ = BANK_ACCOUNT_TYPES[ai]
+    extras["BankAccType"] = acct_code
+
+    extras["BankBranch"] = ""
+    extras["BankCity"]   = ""
+
+    if c == "AR":
+        cbu  = ask_required("CBU (22 digits)")
+        if not RE_CBU_22.match(cbu):
+            raise MoreError("Invalid CBU. Must be 22 digits.")
+        cuit = ask_required("CUIT/CUIL")
+        acc  = ask_required("Account number")
+        extras.update({"BankAccount": acc, "BankDocument": cuit, "CBU": cbu})
+
+    elif c == "BR":
+        agency = ask_required("Agency")
+        acc    = ask_required("Account number")
+        cpf    = ask_required("CPF (11 digits)")
+        if not RE_CPF_11.match(cpf):
+            raise MoreError("Invalid CPF. Must be 11 digits.")
+        extras.update({"BankBranch": agency, "BankAccount": acc, "BankDocument": cpf, "CPF": cpf})
+
+    elif c == "CL":
+        acc = ask_required("Account number")
+        rut = ask_required("RUT (e.g., 12345678-K)")
+        if not RE_RUT.match(rut):
+            raise MoreError("Invalid RUT format. Expected ########-X.")
+        extras.update({"BankAccount": acc, "BankDocument": rut, "RUT": rut})
+
+    elif c in ("US", "USA", "UNITED STATES"):
+        acc = ask_required("Account number")
+        rn  = ask_required("Routing number (9 digits)")
+        if not RE_ROUTING9.match(rn):
+            raise MoreError("Invalid routing number, must be 9 digits.")
+        extras.update({"BankAccount": acc, "RoutingNumber": rn, "BankDocument": rn})
+
+    elif c in ("IN", "INDIA"):
+        acc  = ask_required("Account number")
+        ifsc = ask_required("IFSC (11 chars, e.g., SBIN0000001)")
+        if not RE_IFSC_11.match(ifsc):
+            raise MoreError("Invalid IFSC format.")
+        extras.update({"BankAccount": acc, "IFSC": ifsc, "BankDocument": ifsc})
+
+    else:
+        acc = ask_required("Account number / IBAN")
+        extras.update({"BankAccount": acc, "BankDocument": acc})
+
+    return extras
+
 # ---- Reserve + retry if bad rate ----
 def try_reserve_and_import(
     api: MoreRemesas,
@@ -427,22 +540,26 @@ def try_reserve_and_import(
     allowed_branch_ids: Optional[set[str]],
     allowed_payer_ids: Optional[set[str]],
 ) -> None:
+    if method_label == "Bank":
+        validate_bankinfo_fields(order_info.get("BankInfo") or {})
+
     resv = api.reserve_key(OrderInfo=order_info)
     log.info("RESERVE | %s", resv)
+    _ensure_ok(resv, "ReserveKey")
     rk = extract_reserve_key(resv)
     codes = message_codes(resv)
+
+    payment_key = resv.get("PaymentKey") or resv.get("OrderPayoutKey") or ""
+    if payment_key:
+        print(f"PaymentKey (customer must present this code at payout): {payment_key}")
+
     if rk:
-        payment_key = (
-            resv.get("PaymentKey")
-            or ""
-        )
-        if payment_key:
-            print(f"PaymentKey (client code to withdraw): {payment_key}")
         preview = {**{k: v for k, v in order_info.items() if k not in ("Customer","Beneficiary")},
                    "Customer": order_info["Customer"], "Beneficiary": order_info["Beneficiary"]}
         print("\nORDER IMPORT | Payload:", preview)
         imp = api.order_import(ReserveKey=rk, **order_info)
         print("\nImport result:", imp)
+        _ensure_ok(imp, "OrderImport")
         codes_imp = message_codes(imp)
         if "22" in codes_imp:
             raise MoreError("Agent credit limit exceeded (code 22). Reduce amount or increase ceiling.")
@@ -451,6 +568,7 @@ def try_reserve_and_import(
     if "103" in codes:
         log.warning("Reserve failed with 103: refreshing CALC and retrying with latest rate/amounts.")
         calc = api.order_calc(CountryTo=payout_country, PaymentCurrency=pay_ccy, CalcType=calc_type_value, Amount=order_info["PayoutAmount"])
+        _ensure_ok(calc, "OrderCalc (retry)")
         options = _as_list((calc.get("Options") or {}).get("Option"))
         options = _filter_calc_by_method(options, method_label, allowed_branch_ids, allowed_payer_ids)
         if not options:
@@ -476,23 +594,27 @@ def try_reserve_and_import(
             order_info["ExchangeRate"] = f"{float(rval):.6f}"
         resv2 = api.reserve_key(OrderInfo=order_info)
         log.info("RESERVE-RETRY | %s", resv2)
+        _ensure_ok(resv2, "ReserveKey (retry)")
         rk2 = extract_reserve_key(resv2)
         if not rk2:
-            raise MoreError("Reserve retry failed.")
+            err = _error_from_response(resv2)
+            raise MoreError(f"Reserve retry failed: [{err['code']}] {err['message']}")
         preview = {**{k: v for k, v in order_info.items() if k not in ("Customer","Beneficiary")},
                    "Customer": order_info["Customer"], "Beneficiary": order_info["Beneficiary"]}
         print("\nORDER IMPORT | Payload:", preview)
         imp2 = api.order_import(ReserveKey=rk2, **order_info)
         print("\nImport result:", imp2)
+        _ensure_ok(imp2, "OrderImport (retry)")
         codes_imp2 = message_codes(imp2)
         if "22" in codes_imp2:
             raise MoreError("Agent credit limit exceeded (code 22). Reduce amount or increase ceiling.")
         return
 
-    raise MoreError("Empty ReserveKey: destination requires prior reservation.")
+    err = _error_from_response(resv)
+    raise MoreError(f"Reserve failed: [{err['code']}] {err['message']}")
 
 # -------------------- FLOWS --------------------
-def _choose_bank_from_branches(branches: List[Dict]) -> Optional[str]:
+def _choose_bank_from_branches(branches: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
     uniq: Dict[str, str] = {}
     for b in branches:
         bid = str(b.get("BankID") or "").strip()
@@ -501,11 +623,12 @@ def _choose_bank_from_branches(branches: List[Dict]) -> Optional[str]:
             continue
         uniq[bid] = bname or f"Bank {bid}"
     if not uniq:
-        return None
+        return None, None
     ordered = sorted(uniq.items(), key=lambda x: x[1].lower())
     labels = [f"{name} (BankID={bid})" for bid, name in ordered]
     idx = choose("Bank (destination)", labels, 0)
-    return ordered[idx][0]
+    bid, name = ordered[idx]
+    return bid, name
 
 def flow_calculate(api: MoreRemesas):
     payout_country = ask("Payout Country (ISO-2)", "HT")
@@ -520,27 +643,29 @@ def flow_calculate(api: MoreRemesas):
     idx_ccy = choose("Payout Currency", all_ccys, 0)
     pay_ccy = all_ccys[idx_ccy]
 
-    branches_all_for_filter = branches_for_method(branches_raw, method_label, pay_ccy=pay_ccy, best_per_payer=True)
+    if method_label == "Bank":
+        branches_all_for_filter = branches_for_method(branches_raw, method_label, pay_ccy=pay_ccy, best_per_payer=False)
+    else:
+        branches_all_for_filter = branches_for_method(branches_raw, method_label, pay_ccy=pay_ccy, best_per_payer=True)
+
     allowed_branch_ids = {b["BranchId"] for b in branches_all_for_filter if b.get("BranchId")}
     allowed_payer_ids  = {b["PayerId"] for b in branches_all_for_filter if b.get("PayerId")}
 
     bank_id = None
     if method_label == "Bank":
-        bank_id = _choose_bank_from_branches(branches_all_for_filter)
-
-    calc_ui = ["To pay at destination", "Equivalent base", "Commission included"]
-    ci = choose("Calculation Type", calc_ui, 0)
-    calc_type_value = CALC_TYPES[calc_ui[ci]]
+        has_any_bank = any((str(b.get("BankID") or "").strip() not in ("", "0")) for b in branches_all_for_filter)
+        if not has_any_bank:
+            raise MoreError(f"Bank mode unavailable for {payout_country}/{pay_ccy}. Try Cash or Wallet.")
+        bank_id, _ = _choose_bank_from_branches(branches_all_for_filter)
+        if not bank_id:
+            raise MoreError("No bank selected. BankID is required for Bank mode.")
 
     limits = consolidate_limits(branches_all_for_filter, pay_ccy)
     print(f"Daily payout limit for {pay_ccy}: {limits['day']:,.2f}")
 
-    if calc_type_value == CALC_TYPES["To pay at destination"]:
-        amt = ask_money(f"Amount API in {pay_ccy}")
-        print(f"\nEntered amount: {amt} {pay_ccy} (CalcType={calc_type_value})")
-    else:
-        amt = ask_money(f"Amount API in {BASE_ORDER_CCY}")
-        print(f"\nEntered amount: {amt} {BASE_ORDER_CCY} (CalcType={calc_type_value})")
+    calc_type_value = CALC_TYPES["To pay at destination"]
+    amt = ask_money(f"Amount API in {pay_ccy}")
+    print(f"\nEntered amount: {amt} {pay_ccy} (CalcType={calc_type_value})")
 
     op = select_calc_option(
         api, payout_country, pay_ccy, calc_type_value,
@@ -559,6 +684,7 @@ def flow_status(api: MoreRemesas):
     if not params:
         print("Nothing to query."); return
     resp = api.orders_status(**params)
+    _ensure_ok(resp, "OrdersStatus")
     print("\nStatus:", resp)
 
 def _collect_sender_bene(source_country_default="CL") -> tuple[dict, dict]:
@@ -618,19 +744,34 @@ def flow_send(api: MoreRemesas):
     branches_raw = fetch_branches_all(api, payout_country, method_label, page_size="1000")
 
     all_ccys = currencies_from_branches(branches_raw)
-    if not all_ccys: raise MoreError("No payout currencies returned by API.")
+    if not all_ccys:
+        raise MoreError("No payout currencies returned by API.")
     idx_ccy = choose("Payout Currency", all_ccys, 0)
     pay_ccy = all_ccys[idx_ccy]
 
-    branches_all_for_filter = branches_for_method(
-        branches_raw, method_label, pay_ccy=pay_ccy, best_per_payer=True
-    )
+    if method_label == "Bank":
+        branches_all_for_filter = branches_for_method(
+            branches_raw, method_label, pay_ccy=pay_ccy, best_per_payer=False
+        )
+    else:
+        branches_all_for_filter = branches_for_method(
+            branches_raw, method_label, pay_ccy=pay_ccy, best_per_payer=True
+        )
+
     allowed_branch_ids = {b["BranchId"] for b in branches_all_for_filter if b.get("BranchId")}
     allowed_payer_ids  = {b["PayerId"] for b in branches_all_for_filter if b.get("PayerId")}
 
     bank_id = None
+    bank_name = ""
+    bankinfo_extras: Dict[str, Any] = {}
     if method_label == "Bank":
-        bank_id = _choose_bank_from_branches(branches_all_for_filter)
+        has_any_bank = any((str(b.get("BankID") or "").strip() not in ("", "0")) for b in branches_all_for_filter)
+        if not has_any_bank:
+            raise MoreError(f"Bank mode unavailable for {payout_country}/{pay_ccy}. Try Cash or Wallet.")
+        bank_id, bank_name = _choose_bank_from_branches(branches_all_for_filter)
+        if not bank_id:
+            raise MoreError("No bank selected. BankID is required for Bank mode.")
+        bankinfo_extras = collect_country_bank_extras(payout_country, bank_name or "")
 
     limits = consolidate_limits(branches_all_for_filter, pay_ccy)
     print(f"Daily payout limit for {pay_ccy}: {limits['day']:,.2f}")
@@ -666,6 +807,14 @@ def flow_send(api: MoreRemesas):
     payer_id_final   = final_branch["PayerId"]
     name_final       = final_branch["Name"]
 
+    if method_label == "Bank":
+        city_str = (final_branch.get("CityState") or "").strip()
+        city_part, state_part = split_city_state(city_str)
+        bankinfo_extras.setdefault("BankBranch", payout_branch_id)
+        bankinfo_extras.setdefault("BankCity", city_part or state_part or "")
+        bankinfo_extras.setdefault("BankName", bank_name or "")
+        bankinfo_extras.setdefault("BankAccType", bankinfo_extras.get("BankAccType", "CC"))  # fallback
+
     order_ccy  = str(op.get("SendCurrency") or origin_ccy)
     order_amt  = f"{_to_float(op.get('SendAmount') or 0):.2f}"
 
@@ -696,6 +845,7 @@ def flow_send(api: MoreRemesas):
         "PayoutBranchID": payout_branch_id,
         "Customer": sender,
         "Beneficiary": beneficiary,
+        # IMPORTANT: partner ref must be digits only
         "OrderPartnerID": gen_partner_ref_numeric(),
         "PayoutCountry": payout_country,
         "PayoutCurrency": pay_ccy,
@@ -711,20 +861,25 @@ def flow_send(api: MoreRemesas):
     if rate_val:
         order_info["ExchangeRate"] = f"{float(rate_val):.6f}"
 
+    # BankInfo payload conforme à la doc
     if method_label == "Bank":
-        acct_labels = [lbl for _, lbl in BANK_ACCOUNT_TYPES]
-        ai = choose("Account Type", acct_labels, 0)
-        bank_account_type_code, bank_account_type_label = BANK_ACCOUNT_TYPES[ai]
-        bank_account = ask_required("Account (IBAN/CBU/Account number)")
-        bank_agency  = ask("Agency/Branch (if required)", "1234")
-        order_info["Bank"] = {
+        acct_code = bankinfo_extras.get("BankAccType","CC")
+        order_info["BankInfo"] = {
             "BankID": bank_id or "",
-            "Agency": bank_agency or "",
-            "BankAccount": bank_account or "",
-            "AccountType": bank_account_type_code or "",
-            "BankAccountType": bank_account_type_code or "",
-            "AccountTypeLabel": bank_account_type_label or "",
+            "BankName": bankinfo_extras.get("BankName",""),
+            "BankBranch": payout_branch_id,
+            "BankCity": beneficiary["Address"]["City"],
+            "BankAccType": acct_code,
+            "BankAccount": bankinfo_extras.get("BankAccount",""),
+            "BankDocument": bankinfo_extras.get("BankDocument",""),
+            "CBU": bankinfo_extras.get("CBU",""),
+            "RoutingNumber": bankinfo_extras.get("RoutingNumber",""),
+            "IFSC": bankinfo_extras.get("IFSC",""),
+            "CPF": bankinfo_extras.get("CPF",""),
+            "RUT": bankinfo_extras.get("RUT",""),
+            "AccountTypeLabel": ACC_TYPE_LABEL.get(acct_code, acct_code),
         }
+
     if method_label == "Wallet":
         wallet_phone = ask_required("Wallet phone")
         order_info["Wallet"] = {"Phone": wallet_phone}
@@ -736,6 +891,7 @@ def flow_send(api: MoreRemesas):
     )
 
     status = api.orders_status(OrderPartnerID=order_info["OrderPartnerID"])
+    _ensure_ok(status, "OrdersStatus (post-import)")
     print("\nStatus:", status)
     print("\nDone.")
 
@@ -744,6 +900,7 @@ def flow_cancel_or_refund(api: MoreRemesas, mode: str):
     order_id = ask_required("OrderId")
     reason = ask("Reason", "REFUND" if mode == "Refund" else "CANCELLED_BY_AGENT")
     resp = api.order_cancel(OrderId=order_id, Reason=reason)
+    _ensure_ok(resp, f"Order{mode}")
     print(f"\n{mode} response:", resp)
 
 # -------------------- MAIN --------------------
