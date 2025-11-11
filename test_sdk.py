@@ -18,9 +18,9 @@ logging.basicConfig(
 log = logging.getLogger("more-e2e")
 
 # -------------------- CONFIG --------------------
-HOST = "https://www.moresistemas.com:7002"
-LOGIN_USER = "WSRSPA"
-LOGIN_PASS = "123456"
+HOST = "..."
+LOGIN_USER = "..."
+LOGIN_PASS = "..."
 
 BRANCH_TYPES = {"Cash": "2", "Bank": "1", "Wallet": "3"}
 CALC_TYPES = {"To pay at destination": "1", "Equivalent base": "2", "Commission included": "3"}
@@ -432,6 +432,12 @@ def try_reserve_and_import(
     rk = extract_reserve_key(resv)
     codes = message_codes(resv)
     if rk:
+        payment_key = (
+            resv.get("PaymentKey")
+            or ""
+        )
+        if payment_key:
+            print(f"PaymentKey (client code to withdraw): {payment_key}")
         preview = {**{k: v for k, v in order_info.items() if k not in ("Customer","Beneficiary")},
                    "Customer": order_info["Customer"], "Beneficiary": order_info["Beneficiary"]}
         print("\nORDER IMPORT | Payload:", preview)
