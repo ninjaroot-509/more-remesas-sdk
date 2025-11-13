@@ -2,7 +2,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Dict, Optional
 
-from .endpoints import PATHS, SOAP11, MMT_NS
+from .endpoints import PATHS_SANDBOX, PATHS_PROD, SOAP11, MMT_NS
 from .soap import SoapClient
 from .exceptions import AuthError, ValidationError
 
@@ -180,6 +180,8 @@ class MoreRemesas:
         self.token: Optional[str] = None
         self.token_due: Optional[dt.datetime] = None
 
+        self.paths = PATHS_PROD if not sandbox else PATHS_SANDBOX
+
         if self.auto_auth and self.login_user and self.login_pass:
             self._authenticate()
 
@@ -264,7 +266,7 @@ class MoreRemesas:
         )
         xml    = self._envelope(body, "")
         action = "MMTaction/" + op_name
-        root   = self.soap.post(PATHS["AUTH"], action, xml)
+        root   = self.soap.post(self.paths["AUTH"], action, xml)
 
         resp = root.find(".//{MMT}Response") or root.find(".//*[contains(local-name(), 'Response')]")
         if resp is None:
@@ -310,7 +312,7 @@ class MoreRemesas:
         xml    = self._envelope(body, header)
         action = "MMTaction/" + op_name
 
-        root = self.soap.post(PATHS[path_key], action, xml)
+        root = self.soap.post(self.paths[path_key], action, xml)
         resp = root.find(".//{MMT}Response") or root.find(".//*[contains(local-name(), 'Response')]")
         if resp is None:
             raise ValidationError("Response not found")
