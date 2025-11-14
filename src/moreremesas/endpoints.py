@@ -13,7 +13,6 @@ PATHS_SANDBOX = {
     "ORDER_UPDATE": "/HmgChile16/aWs_Api_OrderUpdate2.aspx",
     "ORDER_CANCEL": "/HmgChile16/aWs_Api_OrderCancel2.aspx",
     "ORDER_ACTIVATE": "/HmgChile16/aWs_Api_OrderActivate2.aspx",
-    "ORDER_REFUND": "/HmgChile16/aWs_Api_OrderRefund2.aspx",
     "ORDER_VOUCHER": "/HmgChile16/aWs_Api_OrderVoucher2.aspx",
     "ORDER_VALIDATE": "/HmgChile16/aWs_Api_OrderValidate2.aspx",
 }
@@ -29,7 +28,6 @@ PATHS_PROD = {
     "ORDER_UPDATE": "/aWs_Api_OrderUpdate2.aspx",
     "ORDER_CANCEL": "/aWs_Api_OrderCancel2.aspx",
     "ORDER_ACTIVATE": "/aWs_Api_OrderActivate2.aspx",
-    "ORDER_REFUND": "/aWs_Api_OrderRefund2.aspx",
     "ORDER_VOUCHER": "/aWs_Api_OrderVoucher2.aspx",
     "ORDER_VALIDATE": "/aWs_Api_OrderValidate2.aspx",
 }
