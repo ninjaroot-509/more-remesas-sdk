@@ -850,7 +850,7 @@ def flow_send(api: MoreRemesas):
         "PayoutCountry": payout_country,
         "PayoutCurrency": pay_ccy,
         "PayoutAmount": f"{_to_float(op.get('PaymentAmount') or user_amt):.2f}",
-        "Relationship": "2",
+        "Relationship": "8",
         "PourposeCode": "1",
         "PayerID": payer_id_final,
         "PayoutMethod": BRANCH_TYPES[method_label],
@@ -895,13 +895,56 @@ def flow_send(api: MoreRemesas):
     print("\nStatus:", status)
     print("\nDone.")
 
-def flow_cancel_or_refund(api: MoreRemesas, mode: str):
-    print(f"{mode} order")
+def flow_cancel(api: MoreRemesas):
+    print(f"cancel order")
     order_id = ask_required("OrderId")
-    reason = ask("Reason", "REFUND" if mode == "Refund" else "CANCELLED_BY_AGENT")
-    resp = api.order_cancel(OrderId=order_id, Reason=reason)
-    _ensure_ok(resp, f"Order{mode}")
-    print(f"\n{mode} response:", resp)
+    order_partner_id = ask("OrderPartnerID (leave empty to skip)", "")
+    reason = ask("Reason", "CANCELLED_BY_AGENT")
+    resp = api.order_cancel(OrderId=order_id, OrderPartnerID=order_partner_id, Reason=reason)
+    print(f"response raw: {resp}")
+    _ensure_ok(resp, f"OrderCancel")
+    print(f"\nCancel response:", resp)
+
+def build_attributes_for_update() -> dict:
+    fields = [
+        ("BeneFirstName", "Name - Char(32)"),
+        ("BeneLastName",  "Surname - Char(32)"),
+        ("BeneAddress",   "Address - Char(64)"),
+        ("BenePhone",     "Phone - Char(32)"),
+    ]
+    print("Attributes used to modify:")
+    for k, desc in fields:
+        print(f"  {k}: {desc}")
+
+    attrs = []
+    for k, _ in fields:
+        v = ask(f"{k} (leave empty to skip)", "")
+        if v.strip():
+            attrs.append({"AttributeKey": k, "AttributeValue": v.strip()})
+
+    while True:
+        more_key = ask("Add another attribute key? (empty to stop)", "")
+        if not more_key.strip():
+            break
+        more_val = ask_required(f"Value for {more_key.strip()}")
+        attrs.append({"AttributeKey": more_key.strip(), "AttributeValue": more_val})
+
+    return {"Attribute": attrs}
+
+def flow_update(api: MoreRemesas):
+    print("update order")
+    order_id = ask_required("OrderId")
+    attrs = build_attributes_for_update()
+    if not attrs.get("Attribute"):
+        raise MoreError("No attributes provided.")
+
+    resp = api.order_update(
+        OrderId=order_id,
+        Attributes=attrs,
+    )
+    print(f"response raw: {resp}")
+    _ensure_ok(resp, "OrderUpdate")
+    print("\nUpdate response:", resp)
 
 # -------------------- MAIN --------------------
 def main():
@@ -919,14 +962,14 @@ def main():
             "Calculate transfer",
             "Order status",
             "Cancel order",
-            "Refund order",
+            "Update order",
             "Exit",
         ], 1)
         if action_idx == 0: flow_send(api)
         elif action_idx == 1: flow_calculate(api)
         elif action_idx == 2: flow_status(api)
-        elif action_idx == 3: flow_cancel_or_refund(api, "Cancel")
-        elif action_idx == 4: flow_cancel_or_refund(api, "Refund")
+        elif action_idx == 3: flow_cancel(api)
+        elif action_idx == 4: flow_update(api)
         else:
             print("Bye."); break
 
