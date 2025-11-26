@@ -30,7 +30,6 @@ class BankInfo(TypedDict, total=False):
     BankCity: NotRequired[str]
 
 class OrderInfoType2(TypedDict, total=False):
-    OrderId: NotRequired[str]
     OrderPartnerID: NotRequired[str]
     OrderDate: str              # YYYY-MM-DD
     SourceCountry: str          # ISO alpha-2

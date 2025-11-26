@@ -16,6 +16,7 @@ OP_MAP = {
     "ORDERS_STATUS":  ("Ws_Api_OrdersStatus2.Execute",     "Request"),
     "ORDER_ACTIVATE": ("Ws_Api_OrderActivate2.Execute",    "Request"),
     "ORDER_CANCEL":   ("Ws_Api_OrderCancel2.Execute",      "Request"),
+    "ORDER_REFUND":   ("aWs_Api_OrderRefund2.Execute",      "Request"),
     "ORDER_UPDATE":   ("Ws_Api_OrderUpdate2.Execute",      "Request"),
     "ORDER_VOUCHER":  ("Ws_Api_OrderVoucher2.Execute",     "Request"),
     "ORDER_CALC":     ("Ws_Api_OrderCalc2.Execute",        "Request"),
@@ -361,6 +362,12 @@ class MoreRemesas:
         if "Attributes" not in fields or fields["Attributes"] is None:
             fields["Attributes"] = {}
         return self._call("ORDER_CANCEL", "ORDER_CANCEL", fields)
+    
+    def order_refund(self, **fields) -> dict:
+        """aWs_Api_OrderRefund2.aspx"""
+        if "Attributes" not in fields or fields["Attributes"] is None:
+            fields["Attributes"] = {}
+        return self._call("ORDER_REFUND", "ORDER_REFUND", fields)
 
     def order_update(self, **fields) -> dict:
         """aWs_Api_OrderUpdate2.aspx"""

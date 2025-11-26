@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Tuple, Optional
 from moreremesas import MoreRemesas
 from moreremesas.exceptions import MoreError
 
-# -------------------- LOG --------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)sZ | %(levelname)-7s | %(message)s",
@@ -17,7 +16,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("more-e2e")
 
-# -------------------- CONFIG --------------------
 HOST = "..."
 LOGIN_USER = "..."
 LOGIN_PASS = "..."
@@ -34,10 +32,8 @@ ACC_TYPE_LABEL = {"CC": "CTE", "CA": "AHO", "IBAN": "IBAN"}
 
 BASE_ORDER_CCY = "CLP"
 
-# -------------------- LIMITS TOGGLE --------------------
 APPLY_LIMITS: bool = False
 
-# -------------------- INPUT HELPERS --------------------
 def ask(prompt: str, default: str | None = None) -> str:
     sfx = f" [{default}]" if default not in (None, "") else ""
     v = input(f"{prompt}{sfx}: ").strip()
@@ -112,7 +108,6 @@ def confirm(prompt: str) -> bool:
     log.info("CONFIRM | %s => %s", prompt, ok)
     return ok
 
-# -------------------- UTIL --------------------
 def _as_list(node: Any) -> List[Dict]:
     if not node or node == "": return []
     if isinstance(node, list): return node
@@ -181,7 +176,6 @@ def _pick_ccys_from_options(options: List[Dict]) -> Tuple[str, str]:
             break
     return send_ccy or "XXX", pay_ccy or "XXX"
 
-# -------------------- ERROR NORMALIZATION --------------------
 def _error_from_response(resp: dict) -> Dict[str, Any]:
     mapper = getattr(MoreRemesas, "error_from_response", None)
     if callable(mapper):
@@ -204,7 +198,6 @@ def _ensure_ok(resp: dict, ctx: str = "API") -> None:
         err = _error_from_response(resp)
         raise MoreError(f"{ctx}: [{err['code']}] {err['message']}")
 
-# -------------------- API HELPERS --------------------
 def fetch_branches_all(api: MoreRemesas, payout_country: str, method_label: str, page_size="1000") -> List[Dict]:
     t = BRANCH_TYPES[method_label]
     all_items: List[Dict] = []
@@ -280,7 +273,6 @@ def branches_for_method(
         return ranked or pool
     return pool
 
-# -------- Currency limits ----------
 def _extract_currency_limits_from_entry(cur: Dict) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     def _clean(v):
         if v in (None, "", {}):
@@ -309,7 +301,6 @@ def consolidate_limits(branches: List[Dict], pay_ccy: str) -> Dict[str, Optional
             "max": min(maxs) if maxs else 0,
             "day": min(days) if days else 0}
 
-# -------------------- CALC TABLE --------------------
 def print_calc_table_portal(options: List[Dict]) -> None:
     send_ccy, pay_ccy = _pick_ccys_from_options(options)
     cols = [
@@ -335,7 +326,6 @@ def print_calc_table_portal(options: List[Dict]) -> None:
         print(" ".join(f"{cell:<{w}}" for cell, (_, w) in zip(row, cols)))
     print(bar + "\n")
 
-# -------------------- CORE CALC SELECTION --------------------
 def _filter_calc_by_method(
     options: List[Dict],
     method_label: str,
@@ -386,6 +376,7 @@ def select_calc_option(
         params["BankID"] = bank_id
 
     calc = api.order_calc(**params)
+    print("\nCALC response:", calc)
     _ensure_ok(calc, "OrderCalc")
     options = _as_list((calc.get("Options") or {}).get("Option"))
 
@@ -403,13 +394,13 @@ def select_calc_option(
     iop = choose("Pick a network/payer option", labels, 0)
     return options[iop]
 
-# ---- RATES ----
 def fetch_rate_id_and_value(api: MoreRemesas, payer_id: str, branch_id: str, pay_ccy: str, order_ccy: str) -> Tuple[str, float]:
     try:
         log.info("RATES2 | Request: PayerId=%s BranchID=%s Currency=%s BaseCurrency=%s IncludeDynamicRates=1",
                  payer_id, branch_id, pay_ccy, order_ccy)
         resp = api.rates(PayerId=payer_id, BranchID=branch_id, Currency=pay_ccy,
                          BaseCurrency=order_ccy, IncludeDynamicRates="1")
+        print("\nRates response:", resp)
         _ensure_ok(resp, "Rates")
     except Exception:
         return "", 0.0
@@ -442,7 +433,6 @@ def message_codes(payload: dict) -> set[str]:
     if isinstance(msgs, dict): msgs = [msgs]
     return {str(m.get("MessageCode")) for m in msgs if isinstance(m, dict)}
 
-# ---- BankInfo validation ----
 def validate_bankinfo_fields(bankinfo: Dict[str, Any]) -> None:
     req = ["BankName", "BankAccType", "BankAccount", "BankBranch", "BankCity"]
     for k in req:
@@ -452,7 +442,6 @@ def validate_bankinfo_fields(bankinfo: Dict[str, Any]) -> None:
     if bankinfo["BankAccType"].upper() not in {"CC", "CA", "IBAN"}:
         raise MoreError("BankAccType must be one of: CC, CA, IBAN.")
 
-# ---- Country quick validation rules & prompts ----
 def _re_digits(n: int) -> re.Pattern:
     return re.compile(rf"^\d{{{n}}}$")
 
@@ -528,7 +517,6 @@ def collect_country_bank_extras(payout_country: str, bank_name_default: str) -> 
 
     return extras
 
-# ---- Reserve + retry if bad rate ----
 def try_reserve_and_import(
     api: MoreRemesas,
     order_info: Dict[str, Any],
@@ -613,7 +601,6 @@ def try_reserve_and_import(
     err = _error_from_response(resv)
     raise MoreError(f"Reserve failed: [{err['code']}] {err['message']}")
 
-# -------------------- FLOWS --------------------
 def _choose_bank_from_branches(branches: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
     uniq: Dict[str, str] = {}
     for b in branches:
@@ -813,7 +800,7 @@ def flow_send(api: MoreRemesas):
         bankinfo_extras.setdefault("BankBranch", payout_branch_id)
         bankinfo_extras.setdefault("BankCity", city_part or state_part or "")
         bankinfo_extras.setdefault("BankName", bank_name or "")
-        bankinfo_extras.setdefault("BankAccType", bankinfo_extras.get("BankAccType", "CC"))  # fallback
+        bankinfo_extras.setdefault("BankAccType", bankinfo_extras.get("BankAccType", "CC"))
 
     order_ccy  = str(op.get("SendCurrency") or origin_ccy)
     order_amt  = f"{_to_float(op.get('SendAmount') or 0):.2f}"
@@ -845,7 +832,6 @@ def flow_send(api: MoreRemesas):
         "PayoutBranchID": payout_branch_id,
         "Customer": sender,
         "Beneficiary": beneficiary,
-        # IMPORTANT: partner ref must be digits only
         "OrderPartnerID": gen_partner_ref_numeric(),
         "PayoutCountry": payout_country,
         "PayoutCurrency": pay_ccy,
@@ -861,7 +847,6 @@ def flow_send(api: MoreRemesas):
     if rate_val:
         order_info["ExchangeRate"] = f"{float(rate_val):.6f}"
 
-    # BankInfo payload conforme à la doc
     if method_label == "Bank":
         acct_code = bankinfo_extras.get("BankAccType","CC")
         order_info["BankInfo"] = {
@@ -901,6 +886,16 @@ def flow_cancel(api: MoreRemesas):
     order_partner_id = ask("OrderPartnerID (leave empty to skip)", "")
     reason = ask("Reason", "CANCELLED_BY_AGENT")
     resp = api.order_cancel(OrderId=order_id, OrderPartnerID=order_partner_id, Reason=reason)
+    print(f"response raw: {resp}")
+    _ensure_ok(resp, f"OrderCancel")
+    print(f"\nCancel response:", resp)
+
+def flow_refund(api: MoreRemesas):
+    print(f"refund order")
+    order_id = ask_required("OrderId")
+    order_partner_id = ask("OrderPartnerID (leave empty to skip)", "")
+    reason = ask("Reason", "CANCELLED_BY_AGENT")
+    resp = api.order_refund(OrderId=order_id, OrderPartnerID=order_partner_id, Reason=reason)
     print(f"response raw: {resp}")
     _ensure_ok(resp, f"OrderCancel")
     print(f"\nCancel response:", resp)
@@ -946,7 +941,6 @@ def flow_update(api: MoreRemesas):
     _ensure_ok(resp, "OrderUpdate")
     print("\nUpdate response:", resp)
 
-# -------------------- MAIN --------------------
 def main():
     print("Remittances")
     sandbox = ask("Use SANDBOX? [y/N]", "y").lower().startswith("y")
@@ -961,7 +955,8 @@ def main():
             "Send money",
             "Calculate transfer",
             "Order status",
-            "Cancel order",
+            "Cancel order bank",
+            "Cancel order transfer"
             "Update order",
             "Exit",
         ], 1)
@@ -969,7 +964,8 @@ def main():
         elif action_idx == 1: flow_calculate(api)
         elif action_idx == 2: flow_status(api)
         elif action_idx == 3: flow_cancel(api)
-        elif action_idx == 4: flow_update(api)
+        elif action_idx == 4: flow_refund(api)
+        elif action_idx == 5: flow_update(api)
         else:
             print("Bye."); break
 
