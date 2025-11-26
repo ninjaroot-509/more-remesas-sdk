@@ -955,8 +955,8 @@ def main():
             "Send money",
             "Calculate transfer",
             "Order status",
-            "Cancel order bank",
-            "Cancel order transfer"
+            "Cancel order",
+            "Refund order"
             "Update order",
             "Exit",
         ], 1)
